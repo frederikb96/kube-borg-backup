@@ -1,0 +1,51 @@
+# -- Namespace management
+namespace:
+  create: false
+  name: somespace
+
+# -- Name that ServiceAccount should have
+serviceAccount:
+  name: backup-account
+
+# -- Container image that runs kubectl + bash
+image:
+  repository: bitnami/kubectl
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# -- CronJob spec
+cron:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 60
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+
+# -- Script fragments
+script:
+  # Vars you want to define used by the script
+  vars: |-
+    SOMEVAR="test"
+
+  # Code that should be executed before creating snapshots
+  preexec: |-
+    echo "🗄️ Pausing db"
+    # kubectl exec -n {{ .Values.namespace.name }} somedb-0 -- bash -c 'echo "pause db"'
+
+  # Code that should be executed after creating snapshots and if the script exits for any reason
+  postexec: |-
+    echo "🗄️ Unpausing db"
+    # kubectl exec -n {{ .Values.namespace.name }} somedb-0 -- bash -c 'echo "unpause db"'
+
+# -- List of PVCs to snapshot and prune
+snapshots:
+  - pvc: app-db-pvc
+    class: longhorn
+    keep:
+      n_count: 12
+      mHours: 24
+  - pvc: app-data-pvc
+    class: smb
+    keep:
+      n_count: 12
+      mHours: 24

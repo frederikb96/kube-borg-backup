@@ -1,0 +1,130 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "snapshot-borgbackup.fullname" . }}
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "snapshot-borgbackup.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.cron.schedule | quote }}
+  concurrencyPolicy: {{ .Values.cron.concurrencyPolicy }}
+  startingDeadlineSeconds: {{ .Values.cron.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.cron.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.cron.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: {{ .Values.serviceAccount.name }}
+          restartPolicy: Never
+          containers:
+            - name: snapshot
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["/bin/bash","-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  trap postexec SIGINT SIGTERM EXIT
+
+{{ tpl .Values.script.vars . | nindent 18 }}
+
+                  preexec() {
+{{ tpl .Values.script.preexec . | nindent 20 }}
+                  }
+
+                  postexec() {
+{{ tpl .Values.script.postexec . | nindent 20 }}
+                  }
+
+                  create_snapshot() {
+                    local pvc="$1"
+                    local class="$2"
+                    local ns="$3"
+                    TS=$(date +%Y%m%d%H%M%S)
+                    SNAP="${pvc}-snap-$TS"
+
+                    echo "📸 Creating VolumeSnapshot $SNAP"
+                    SNAPSHOT_YAML=$(cat <<EOF
+                  apiVersion: snapshot.storage.k8s.io/v1
+                  kind: VolumeSnapshot
+                  metadata:
+                    name: $SNAP
+                    namespace: $ns
+                    labels:
+                      pvc: $pvc
+                  spec:
+                    volumeSnapshotClassName: $class
+                    source:
+                      persistentVolumeClaimName: $pvc
+                  EOF
+                  )
+                    echo "$SNAPSHOT_YAML" | kubectl apply -f -
+
+                    echo "⏳ Waiting for snapshot to become ready"
+                    kubectl wait volumesnapshot/"$SNAP" \
+                      --namespace=$ns \
+                      --for=jsonpath='{.status.readyToUse}=true' \
+                      --timeout=20s
+                  }
+
+                  prune_snapshots() {
+                    local pvc="$1"
+                    local keep_n="$2"
+                    local keep_m_hours="$3"
+                    local ns="$4"
+
+                    echo "🗄️  Pruning snapshots for PVC $pvc"
+                    KEEP_N=${keep_n}
+                    KEEP_M_HOURS=${keep_m_hours}
+
+                    NOW=$(date -u +%s)
+                    THRESHOLD=$(( NOW - KEEP_M_HOURS*3600 ))
+
+                    kubectl -n $ns get volumesnapshot \
+                      -l pvc=$pvc \
+                      -o custom-columns=NAME:.metadata.name,TS:.metadata.creationTimestamp \
+                      --no-headers \
+                    | sort -k2 -r \
+                    > /tmp/all_snaps.txt
+
+                    NEWEST=$(head -n "$KEEP_N" /tmp/all_snaps.txt | awk '{print $1}')
+
+                    OLDER=$(while read -r name ts; do
+                      epoch=$(date -u -d "$ts" +%s)
+                      if [ "$epoch" -lt "$THRESHOLD" ]; then
+                        echo "$name"
+                        break
+                      fi
+                    done < /tmp/all_snaps.txt)
+
+                    PRESERVE="$NEWEST $OLDER"
+
+                    awk '{print $1}' /tmp/all_snaps.txt | while read -r name; do
+                      keep=false
+                      for k in $PRESERVE; do
+                        [ "$k" = "$name" ] && { keep=true; break; }
+                      done
+                      if ! $keep; then
+                        echo "Deleting old snapshot: $name"
+                        kubectl -n $ns delete volumesnapshot "$name"
+                      fi
+                    done
+                  }
+
+                  preexec
+
+                  time_start=$(date +%s)
+{{- range .Values.snapshots }}
+                  create_snapshot {{ .pvc }} {{ .class }} {{ $.Values.namespace.name }}
+{{- end }}
+                  time_end=$(date +%s)
+                  time_taken=$(( time_end - time_start ))
+                  echo "⏱️ Time taken for snapshots: $time_taken seconds"
+{{- range .Values.snapshots }}
+                  prune_snapshots {{ .pvc }} {{ .keep.n_count }} {{ .keep.mHours }} {{ $.Values.namespace.name }}
+{{- end }}
+
+                  echo "✅ Done."
+                  exit 0
