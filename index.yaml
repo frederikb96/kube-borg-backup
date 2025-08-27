@@ -1,0 +1,28 @@
+apiVersion: v1
+entries:
+  snapshot-borgbackup:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2025-08-27T21:15:41.265770593Z"
+    description: Creates a CSI VolumeSnapshot of a PVC and uses borgbackup to back
+      it up to a borg repo
+    digest: 0e8060d4599ba5cbde11ecd3f46ba5ee7b4da5f999653f4e43ff380d0f09434b
+    home: https://github.com/frederikb96/pvc-csi-snapshot-borgbackup-helm
+    keywords:
+    - pvc
+    - snapshot
+    - csi
+    - borgbackup
+    - backup
+    kubeVersion: '>=1.25.0-0'
+    maintainers:
+    - name: Frederik Berg
+      url: https://frederikberg.com
+    name: snapshot-borgbackup
+    sources:
+    - https://github.com/frederikb96/pvc-csi-snapshot-borgbackup-helm
+    type: application
+    urls:
+    - https://github.com/frederikb96/pvc-csi-snapshot-borgbackup-helm/releases/download/helm-chart-snapshot-borgbackup-0.1.0/snapshot-borgbackup-0.1.0.tgz
+    version: 0.1.0
+generated: "2025-08-27T21:15:41.265777837Z"
