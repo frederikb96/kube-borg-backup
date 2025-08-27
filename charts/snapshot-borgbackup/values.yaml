@@ -13,6 +13,9 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
+
+### todo: put everything for snapshot into a snapshot section and nest under that all that below... and then also introduce a borgbackup section...
+
 # -- CronJob spec
 cron:
   schedule: "0 * * * *"
@@ -49,3 +52,10 @@ snapshots:
     keep:
       n_count: 12
       mHours: 24
+
+
+#### todo tempalte, .... at some point within the borgbackup secttion we need to set the ssh key somehow like this and then we template this in the secret tempalte...
+privateKey: |
+  -----BEGIN OPENSSH PRIVATE KEY-----
+  somekey
+  -----END OPENSSH PRIVATE KEY-----

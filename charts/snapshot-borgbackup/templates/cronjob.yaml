@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "snapshot-borgbackup.fullname" . }}
+  name: {{ include "snapshot-borgbackup.fullname" . }} #todo instead let user set the name in values
   namespace: {{ .Values.namespace.name }}
   labels:
     {{- include "snapshot-borgbackup.labels" . | nindent 4 }}
@@ -19,7 +19,7 @@ spec:
           serviceAccountName: {{ .Values.serviceAccount.name }}
           restartPolicy: Never
           containers:
-            - name: snapshot
+            - name: snapshot #todo template
               image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
               imagePullPolicy: {{ .Values.image.pullPolicy }}
               command: ["/bin/bash","-c"]
