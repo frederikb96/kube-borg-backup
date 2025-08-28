@@ -16,5 +16,5 @@ helm install snap snapshot-backup/snapshot-borgbackup --values my-values.yaml
 
 ## Test
 ```sh
-helm template charts/snapshot-borgbackup
+helm template charts/snapshot-borgbackup --values immich/values.yaml > immich/test-output.yaml
 ```

@@ -1,61 +1,105 @@
-# -- Namespace management
+## -- Namespace management
 namespace:
   create: false
   name: somespace
 
-# -- Name that ServiceAccount should have
+## -- Name that ServiceAccount should have
 serviceAccount:
   name: backup-account
 
-# -- Container image that runs kubectl + bash
+## -- Container image that runs kubectl + bash
 image:
   repository: bitnami/kubectl
   tag: latest
   pullPolicy: IfNotPresent
 
+## -- Snapshot CronJob configuration
+snapshot:
+  name: snapshot
+  containerName: snapshot
 
-### todo: put everything for snapshot into a snapshot section and nest under that all that below... and then also introduce a borgbackup section...
+  cron:
+    schedule: "0 * * * *"
+    concurrencyPolicy: Forbid
+    startingDeadlineSeconds: 60
+    successfulJobsHistoryLimit: 1
+    failedJobsHistoryLimit: 1
 
-# -- CronJob spec
-cron:
-  schedule: "0 * * * *"
-  concurrencyPolicy: Forbid
-  startingDeadlineSeconds: 60
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
+  script:
+    # Vars you want to define used by the script
+    vars: |-
+      SOMEVAR="test"
 
-# -- Script fragments
-script:
-  # Vars you want to define used by the script
-  vars: |-
-    SOMEVAR="test"
+    # Code that should be executed before creating snapshots
+    preexec: |-
+      echo "🗄️ Pausing db"
+      # kubectl exec -n {{ .Values.namespace.name }} somedb-0 -- bash -c 'echo "pause db"'
 
-  # Code that should be executed before creating snapshots
-  preexec: |-
-    echo "🗄️ Pausing db"
-    # kubectl exec -n {{ .Values.namespace.name }} somedb-0 -- bash -c 'echo "pause db"'
+    # Code that should be executed after creating snapshots and if the script exits for any reason
+    postexec: |-
+      echo "🗄️ Unpausing db"
+      # kubectl exec -n {{ .Values.namespace.name }} somedb-0 -- bash -c 'echo "unpause db"'
 
-  # Code that should be executed after creating snapshots and if the script exits for any reason
-  postexec: |-
-    echo "🗄️ Unpausing db"
-    # kubectl exec -n {{ .Values.namespace.name }} somedb-0 -- bash -c 'echo "unpause db"'
+  # -- List of PVCs to snapshot and prune
+  snapshots:
+    - pvc: app-db-pvc
+      class: longhorn
+      keep:
+        n_count: 12
+        mHours: 24
+    - pvc: app-data-pvc
+      class: smb
 
-# -- List of PVCs to snapshot and prune
-snapshots:
-  - pvc: app-db-pvc
-    class: longhorn
-    keep:
-      n_count: 12
-      mHours: 24
-  - pvc: app-data-pvc
-    class: smb
-    keep:
-      n_count: 12
-      mHours: 24
+      keep:
+        n_count: 12
+        mHours: 24
 
+## -- BorgBackup configuration
+borgbackup:
+  name: borgbackup
+  containerName: backup
 
-#### todo tempalte, .... at some point within the borgbackup secttion we need to set the ssh key somehow like this and then we template this in the secret tempalte...
-privateKey: |
-  -----BEGIN OPENSSH PRIVATE KEY-----
-  somekey
-  -----END OPENSSH PRIVATE KEY-----
+  cron:
+    schedule: "30 */6 * * *"
+    concurrencyPolicy: Forbid
+    startingDeadlineSeconds: 300
+    successfulJobsHistoryLimit: 1
+    failedJobsHistoryLimit: 1
+    activeDeadlineSeconds: 86400
+
+  pod:
+    name: borg
+    image: alpine:latest
+    timeoutSeconds: 86400
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+
+  borgFlags: "--keep-hourly=24 --keep-daily=7 --keep-weekly=4 --keep-monthly=3 --keep-yearly=1"
+
+  cache:
+    create: true
+    pvcName: borg-cache
+    storageClassName: openebs-hostpath
+    size: 5Gi
+
+  sshSecret:
+    name: borg-ssh
+    privateKey: |
+      -----BEGIN OPENSSH PRIVATE KEY-----
+      somekey
+      -----END OPENSSH PRIVATE KEY-----
+
+  repoSecret:
+    name: borg-secrets
+    BORG_REPO: example
+    BORG_PASSPHRASE: example
+
+  backups:
+    - name: app-db
+      pvc: app-db-pvc
+      class: longhorn
+    - name: app-data
+      pvc: app-data-pvc
+      class: smb

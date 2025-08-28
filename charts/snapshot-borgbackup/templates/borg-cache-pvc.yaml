@@ -1,0 +1,14 @@
+{{- if .Values.borgbackup.cache.create }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.borgbackup.cache.pvcName }}
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.borgbackup.cache.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.borgbackup.cache.size }}
+{{- end }}

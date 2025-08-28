@@ -2,8 +2,8 @@ apiVersion: v2
 name: snapshot-borgbackup
 description: "Creates a CSI VolumeSnapshot of a PVC and uses borgbackup to back it up to a borg repo"
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/frederikb96/pvc-csi-snapshot-borgbackup-helm
 sources:

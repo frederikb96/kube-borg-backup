@@ -1,74 +1,127 @@
-# -- Namespace management
+## -- Namespace management
 namespace:
   create: false
   name: immich
 
-# -- Name that ServiceAccount should have
+## -- Name that ServiceAccount should have
 serviceAccount:
   name: immich-backup-serviceaccount
 
-# -- Container image that runs kubectl + bash
+## -- Container image that runs kubectl + bash
 image:
   repository: bitnami/kubectl
   tag: latest
   pullPolicy: IfNotPresent
 
-# -- CronJob spec
-cron:
-  schedule: "0 * * * *"
-  concurrencyPolicy: Forbid
-  startingDeadlineSeconds: 60
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
+## -- Snapshot CronJob configuration
+snapshot:
+  name: immich-snapshot
+  containerName: immich-snapshot
 
-# -- Script fragments
-script:
-  # Vars you want to define used by the script
-  vars: |-
-    # Get version
-    VERSION_NUM=$(
-      kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
-        bash -c 'psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;"'
-    )
-    [ -n "$VERSION_NUM" ] || { echo "Failed to get PG version"; exit 1; }
+  cron:
+    schedule: "0 * * * *"
+    concurrencyPolicy: Forbid
+    startingDeadlineSeconds: 60
+    successfulJobsHistoryLimit: 1
+    failedJobsHistoryLimit: 1
 
-  # Code that should be executed before creating snapshots
-  preexec: |-
-    echo "🗄️ Pausing db"
-    if [ "$VERSION_NUM" -ge 150000 ]; then
-      kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
-        bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_backup_start(label => '\''immich_snap'\'', fast => true);"'
-    else
-      kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
-        bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_start_backup('\''immich_snap'\'', true);"'
-    fi
+  script:
+    vars: |-
+      # Get version
+      VERSION_NUM=$(
+        kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
+          bash -c 'psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;"'
+      )
+      [ -n "$VERSION_NUM" ] || { echo "Failed to get PG version"; exit 1; }
 
-  # Code that should be executed after creating snapshots and if the script exits for any reason
-  postexec: |-
-    echo "🗄️ Unpausing db"
-    if [ "$VERSION_NUM" -ge 150000 ]; then
-      kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
-        bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_backup_stop(wait_for_archive => true);"' || echo "No backup in progress"
-    else
-      kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
-        bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_stop_backup(true);"' || echo "No backup in progress"
-    fi
-    echo "✅ Database unpaused"
+    preexec: |-
+      echo "🗄️ Pausing db"
+      if [ "$VERSION_NUM" -ge 150000 ]; then
+        kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
+          bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_backup_start(label => '\''immich_snap'\'', fast => true);"'
+      else
+        kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
+          bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_start_backup('\''immich_snap'\'', true);"'
+      fi
 
-# -- List of PVCs to snapshot and prune
-snapshots:
-  - pvc: immich-db-pvc
-    class: longhorn
-    keep:
-      n_count: 12
-      mHours: 24
-  - pvc: immich-backend-pvc
-    class: zfs-generic-smb-csi
-    keep:
-      n_count: 12
-      mHours: 24
-  - pvc: immich-model-cache-pvc
-    class: longhorn
-    keep:
-      n_count: 12
-      mHours: 24
+    postexec: |-
+      echo "🗄️ Unpausing db"
+      if [ "$VERSION_NUM" -ge 150000 ]; then
+        kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
+          bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_backup_stop(wait_for_archive => true);"' || echo "No backup in progress"
+      else
+        kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
+          bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_stop_backup(true);"' || echo "No backup in progress"
+      fi
+      echo "✅ Database unpaused"
+
+  snapshots:
+    - pvc: immich-db-pvc
+      class: longhorn
+      keep:
+        n_count: 12
+        mHours: 24
+    - pvc: immich-backend-pvc
+      class: zfs-generic-smb-csi
+      keep:
+        n_count: 12
+        mHours: 24
+    - pvc: immich-model-cache-pvc
+      class: longhorn
+      keep:
+        n_count: 12
+        mHours: 24
+
+## -- BorgBackup configuration
+borgbackup:
+  name: immich-backup
+  containerName: immich-backup
+
+  cron:
+    schedule: "30 */6 * * *"
+    concurrencyPolicy: Forbid
+    startingDeadlineSeconds: 300
+    successfulJobsHistoryLimit: 1
+    failedJobsHistoryLimit: 1
+    activeDeadlineSeconds: 86400
+
+  pod:
+    name: immich-borg
+    image: alpine:latest
+    timeoutSeconds: 86400
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+
+  borgFlags: "--keep-hourly=24 --keep-daily=7 --keep-weekly=4 --keep-monthly=3 --keep-yearly=1"
+
+  cache:
+    create: true
+    pvcName: immich-borg-cache
+    storageClassName: openebs-hostpath
+    size: 5Gi
+
+  sshSecret:
+    name: borg-ssh
+    privateKey: |
+      -----BEGIN OPENSSH PRIVATE KEY-----
+      YOUR_PRIVATE_KEY_HERE
+      -----END OPENSSH PRIVATE KEY-----
+
+  repoSecret:
+    name: borg-secrets
+    BORG_REPO: YOUR_BORG_REPO
+    BORG_PASSPHRASE: YOUR_PASSPHRASE
+
+  backups:
+    - name: db
+      pvc: immich-db-pvc
+      class: longhorn-temp
+    - name: model
+      pvc: immich-model-cache-pvc
+      class: longhorn-temp
+    - name: immich
+      pvc: immich-backend-pvc
+      class: zfs-generic-smb-csi-delete
+

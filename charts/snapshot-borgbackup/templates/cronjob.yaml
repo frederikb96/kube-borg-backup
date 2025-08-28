@@ -1,16 +1,16 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "snapshot-borgbackup.fullname" . }} #todo instead let user set the name in values
+  name: {{ .Values.snapshot.name | default (include "snapshot-borgbackup.fullname" .) }}
   namespace: {{ .Values.namespace.name }}
   labels:
     {{- include "snapshot-borgbackup.labels" . | nindent 4 }}
 spec:
-  schedule: {{ .Values.cron.schedule | quote }}
-  concurrencyPolicy: {{ .Values.cron.concurrencyPolicy }}
-  startingDeadlineSeconds: {{ .Values.cron.startingDeadlineSeconds }}
-  successfulJobsHistoryLimit: {{ .Values.cron.successfulJobsHistoryLimit }}
-  failedJobsHistoryLimit: {{ .Values.cron.failedJobsHistoryLimit }}
+  schedule: {{ .Values.snapshot.cron.schedule | quote }}
+  concurrencyPolicy: {{ .Values.snapshot.cron.concurrencyPolicy }}
+  startingDeadlineSeconds: {{ .Values.snapshot.cron.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.snapshot.cron.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.snapshot.cron.failedJobsHistoryLimit }}
   jobTemplate:
     spec:
       backoffLimit: 0
@@ -19,7 +19,7 @@ spec:
           serviceAccountName: {{ .Values.serviceAccount.name }}
           restartPolicy: Never
           containers:
-            - name: snapshot #todo template
+            - name: {{ .Values.snapshot.containerName }}
               image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
               imagePullPolicy: {{ .Values.image.pullPolicy }}
               command: ["/bin/bash","-c"]
@@ -27,15 +27,14 @@ spec:
                 - |
                   set -euo pipefail
                   trap postexec SIGINT SIGTERM EXIT
-
-{{ tpl .Values.script.vars . | nindent 18 }}
+{{ tpl .Values.snapshot.script.vars . | nindent 18 }}
 
                   preexec() {
-{{ tpl .Values.script.preexec . | nindent 20 }}
+{{ tpl .Values.snapshot.script.preexec . | nindent 20 }}
                   }
 
                   postexec() {
-{{ tpl .Values.script.postexec . | nindent 20 }}
+{{ tpl .Values.snapshot.script.postexec . | nindent 20 }}
                   }
 
                   create_snapshot() {
@@ -116,13 +115,13 @@ spec:
                   preexec
 
                   time_start=$(date +%s)
-{{- range .Values.snapshots }}
+{{- range .Values.snapshot.snapshots }}
                   create_snapshot {{ .pvc }} {{ .class }} {{ $.Values.namespace.name }}
 {{- end }}
                   time_end=$(date +%s)
                   time_taken=$(( time_end - time_start ))
                   echo "⏱️ Time taken for snapshots: $time_taken seconds"
-{{- range .Values.snapshots }}
+{{- range .Values.snapshot.snapshots }}
                   prune_snapshots {{ .pvc }} {{ .keep.n_count }} {{ .keep.mHours }} {{ $.Values.namespace.name }}
 {{- end }}
 
