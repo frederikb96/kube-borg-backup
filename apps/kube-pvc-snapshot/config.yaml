@@ -1,0 +1,9 @@
+read:
+  namespace: default
+configmap:
+  namespace: default
+  name: example-config
+  path: ./configmap.yaml.j2
+  content: |
+    Hello from Jinja2 rendered ConfigMap.
+    This is a multi-line example.

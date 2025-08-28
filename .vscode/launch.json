@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run kube-pvc-snapshot",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/apps/kube-pvc-snapshot/main.py",
+      "args": ["--config", "./config.yaml"],
+      "cwd": "${workspaceFolder}/apps/kube-pvc-snapshot",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      }
+    }
+  ]
+}
+
