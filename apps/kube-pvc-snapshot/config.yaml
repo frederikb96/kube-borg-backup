@@ -1,9 +1,12 @@
-read:
-  namespace: default
-configmap:
-  namespace: default
-  name: example-config
-  path: ./configmap.yaml.j2
-  content: |
-    Hello from Jinja2 rendered ConfigMap.
-    This is a multi-line example.
+namespace: default
+hooks:
+  pre: |
+    echo "pre-hook"
+  post: |
+    echo "post-hook"
+snapshots:
+  - pvc: example-pvc
+    class: standard
+    keep:
+      n: 12
+      m_hours: 24

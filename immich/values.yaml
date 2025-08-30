@@ -7,34 +7,26 @@ namespace:
 serviceAccount:
   name: immich-backup-serviceaccount
 
-## -- Container image that runs kubectl + bash
-image:
-  repository: bitnami/kubectl
-  tag: latest
-  pullPolicy: IfNotPresent
-
 ## -- Snapshot CronJob configuration
 snapshot:
   name: immich-snapshot
   containerName: immich-snapshot
-
+  image:
+    repository: ghcr.io/example/kube-pvc-snapshot
+    tag: latest
+    pullPolicy: IfNotPresent
   cron:
     schedule: "0 * * * *"
     concurrencyPolicy: Forbid
     startingDeadlineSeconds: 60
     successfulJobsHistoryLimit: 1
     failedJobsHistoryLimit: 1
-
-  script:
-    vars: |-
-      # Get version
-      VERSION_NUM=$(
-        kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
-          bash -c 'psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;"'
-      )
+  hooks:
+    pre: |-
+      VERSION_NUM=$(kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
+        bash -c 'psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;"')
       [ -n "$VERSION_NUM" ] || { echo "Failed to get PG version"; exit 1; }
 
-    preexec: |-
       echo "🗄️ Pausing db"
       if [ "$VERSION_NUM" -ge 150000 ]; then
         kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
@@ -43,8 +35,7 @@ snapshot:
         kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
           bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_start_backup('\''immich_snap'\'', true);"'
       fi
-
-    postexec: |-
+    post: |-
       echo "🗄️ Unpausing db"
       if [ "$VERSION_NUM" -ge 150000 ]; then
         kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
@@ -54,29 +45,31 @@ snapshot:
           bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_stop_backup(true);"' || echo "No backup in progress"
       fi
       echo "✅ Database unpaused"
-
   snapshots:
     - pvc: immich-db-pvc
       class: longhorn
       keep:
-        n_count: 12
-        mHours: 24
+        n: 12
+        m_hours: 24
     - pvc: immich-backend-pvc
       class: zfs-generic-smb-csi
       keep:
-        n_count: 12
-        mHours: 24
+        n: 12
+        m_hours: 24
     - pvc: immich-model-cache-pvc
       class: longhorn
       keep:
-        n_count: 12
-        mHours: 24
+        n: 12
+        m_hours: 24
 
 ## -- BorgBackup configuration
 borgbackup:
   name: immich-backup
   containerName: immich-backup
-
+  image:
+    repository: ghcr.io/example/kube-snapshot-borgbackup
+    tag: latest
+    pullPolicy: IfNotPresent
   cron:
     schedule: "30 */6 * * *"
     concurrencyPolicy: Forbid
@@ -84,36 +77,30 @@ borgbackup:
     successfulJobsHistoryLimit: 1
     failedJobsHistoryLimit: 1
     activeDeadlineSeconds: 86400
-
   pod:
     name: immich-borg
-    image: alpine:latest
+    image: ghcr.io/example/borgbackup-essentials:latest
     timeoutSeconds: 86400
     resources:
       requests:
         memory: "1Gi"
         cpu: "500m"
-
   borgFlags: "--keep-hourly=24 --keep-daily=7 --keep-weekly=4 --keep-monthly=3 --keep-yearly=1"
-
   cache:
     create: true
     pvcName: immich-borg-cache
     storageClassName: openebs-hostpath
     size: 5Gi
-
   sshSecret:
     name: borg-ssh
     privateKey: |
       -----BEGIN OPENSSH PRIVATE KEY-----
       YOUR_PRIVATE_KEY_HERE
       -----END OPENSSH PRIVATE KEY-----
-
   repoSecret:
     name: borg-secrets
     BORG_REPO: YOUR_BORG_REPO
     BORG_PASSPHRASE: YOUR_PASSPHRASE
-
   backups:
     - name: db
       pvc: immich-db-pvc
@@ -124,4 +111,3 @@ borgbackup:
     - name: immich
       pvc: immich-backend-pvc
       class: zfs-generic-smb-csi-delete
-

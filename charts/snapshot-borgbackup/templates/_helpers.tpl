@@ -18,3 +18,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/version: {{ .Chart.AppVersion }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
+
+{{- define "snapshot-borgbackup.snapshotConfigSecret" -}}
+{{ include "snapshot-borgbackup.fullname" . }}-snapshot-config
+{{- end -}}
+
+{{- define "snapshot-borgbackup.borgConfigSecret" -}}
+{{ include "snapshot-borgbackup.fullname" . }}-borg-config
+{{- end -}}
