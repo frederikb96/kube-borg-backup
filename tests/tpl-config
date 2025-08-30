@@ -1,8 +1,8 @@
 apiVersion: v1
 clusters:
 - cluster:
-    certificate-authority-data: $certificate-authority-data
-    server: $server
+    certificate-authority-data: $DR_DATA
+    server: $DR_SERVER
   name: kmini
 contexts:
 - context:
@@ -15,5 +15,5 @@ preferences: {}
 users:
 - name: kmini
   user:
-    client-certificate-data: $client-certificate-data
-    client-key-data: $client-key-data
+    client-certificate-data: $DR_CLIENT
+    client-key-data: $DR_KEY
