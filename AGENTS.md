@@ -9,3 +9,9 @@ Project conventions and guardrails
 - Kubernetes Init: Prefer in‑cluster configuration; fall back to local kubeconfig for development, then construct `client.CoreV1Api()`.
 - Dependencies: List required libraries in `requirements.txt`.
 - Update docs when behavior changes and keep related files in the repository in sync and up to date.
+
+Codex Web Environment
+
+- Preinstalled Python: The hosted Codex environment includes common Python tooling and project requirements
+- No Kubernetes access: There is no kubeconfig or cluster connectivity. Kubernetes calls cannot be executed end‑to‑end.
+- Testing focus: Prefer unit‑style checks for pure code (config parsing, templating). Avoid network/cluster‑dependent checks.
