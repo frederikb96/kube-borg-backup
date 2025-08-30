@@ -26,10 +26,8 @@ helm install snap snapshot-backup/snapshot-borgbackup --values my-values.yaml
 
 ## Development
 
-The Python apps expect their configs at `/config/config.yaml`.  Use the provided
-`values.yaml` or `immich/values.yaml` as templates.  You can dry-run the chart
-locally:
+To test the rendered Helm templates locally for immich as example use:
 
 ```sh
-helm template charts/snapshot-borgbackup --values immich/values.yaml >/tmp/rendered.yaml
+helm template charts/snapshot-borgbackup --values example/values.yaml > /example/rendered.yaml
 ```

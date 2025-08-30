@@ -15,5 +15,4 @@ Codex Web Environment
 - Preinstalled Python: The hosted Codex environment includes common Python tooling and project requirements
 - No Kubernetes access: There is no kubeconfig or cluster connectivity. Kubernetes calls cannot be executed end‑to‑end.
 - Testing focus: Prefer unit‑style checks for pure code (config parsing, templating). Avoid network/cluster‑dependent checks.
-- Shell Scripts: start with `#!/bin/sh` and `set -euo pipefail`. Keep them POSIX
-  compatible and add short comments for clarity.
+
