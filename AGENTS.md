@@ -11,6 +11,8 @@
 - Update docs when behavior changes and keep related files in the repository in sync and up to date.
 
 ## Environment and Tests
+There are two environments, by default you are in the cloud environment, which is explained below. But you might be in a local one, where things are different.
+
 Extensive testings are always key! Always report the results of your tests! Iterate over your code changes if tests fail due to your changes. Report issues with the environment if you cannot get your tests to work.
 
 When implementing features that require a kubernetes cluster, you can test them within your development environment.
@@ -39,3 +41,8 @@ cd apps/<app-name>
 pip install -r requirements.txt
 ```
 - Then execute and debug your code. If it depends on kubernetes, make sure you have access to the kubernetes test cluster as described above and use a dedicated namespace for your tests.
+
+### Local Environment
+Here you have directly access to the kubernetes via `KUBECONFIG="$HOME/.kube/kmini.yaml" kubectl`. Only use this config and not the default one! The tests are the same as described above.
+Regarding python code, always make sure that you have the active virtual environment which is installed at `.venv` in the root of the repository.
+
