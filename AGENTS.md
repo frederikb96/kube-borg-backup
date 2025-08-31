@@ -27,6 +27,7 @@ kubectl create namespace test-XXXX # replace XXXX with random chars
 - Use that namespace for your tests.
 - You have a default storage class and a default snapshot class available.
 - You can create, pvcs, snapshots, pods which mount those and create data in there, etc.
+- Always use temporary files for the resources you create, so you can delete them again easily and you encounter less issues with bash and EOF syntax problems.
 - When you are done with your tests, delete the namespace again:
 ```sh
 kubectl delete namespace test-XXXX # replace XXXX with the name you used before
