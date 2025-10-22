@@ -22,6 +22,7 @@ spec:
             - name: {{ .Values.snapshot.containerName }}
               image: "{{ .Values.snapshot.image.repository }}:{{ .Values.snapshot.image.tag }}"
               imagePullPolicy: {{ .Values.snapshot.image.pullPolicy }}
+              command: ["python", "-m", "kube_pvc_snapshot.main"]
               volumeMounts:
                 - name: config
                   mountPath: /config

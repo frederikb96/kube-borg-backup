@@ -23,6 +23,7 @@ spec:
             - name: {{ .Values.borgbackup.containerName }}
               image: "{{ .Values.borgbackup.image.repository }}:{{ .Values.borgbackup.image.tag }}"
               imagePullPolicy: {{ .Values.borgbackup.image.pullPolicy }}
+              command: ["python", "-m", "kube_snapshot_borgbackup.main"]
               volumeMounts:
                 - name: config
                   mountPath: /config
