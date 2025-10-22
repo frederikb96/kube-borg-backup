@@ -4,7 +4,7 @@ metadata:
   name: {{ .Values.borgbackup.name }}
   namespace: {{ .Values.namespace.name }}
   labels:
-    {{- include "snapshot-borgbackup.labels" . | nindent 4 }}
+    {{- include "kube-borg-backup.labels" . | nindent 4 }}
 spec:
   schedule: {{ .Values.borgbackup.cron.schedule | quote }}
   concurrencyPolicy: {{ .Values.borgbackup.cron.concurrencyPolicy }}
@@ -30,4 +30,4 @@ spec:
           volumes:
             - name: config
               secret:
-                secretName: {{ include "snapshot-borgbackup.borgConfigSecret" . }}
+                secretName: {{ include "kube-borg-backup.borgConfigSecret" . }}

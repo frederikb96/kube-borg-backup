@@ -12,7 +12,7 @@ snapshot:
   name: snapshot
   containerName: snapshot
   image:
-    repository: ghcr.io/example/kube-pvc-snapshot
+    repository: ghcr.io/frederikb96/kube-borg-backup-controller
     tag: latest
     pullPolicy: IfNotPresent
   cron:
@@ -43,7 +43,7 @@ borgbackup:
   name: borgbackup
   containerName: backup
   image:
-    repository: ghcr.io/example/kube-snapshot-borgbackup
+    repository: ghcr.io/frederikb96/kube-borg-backup-controller
     tag: latest
     pullPolicy: IfNotPresent
   cron:
@@ -55,7 +55,7 @@ borgbackup:
     activeDeadlineSeconds: 86400
   pod:
     name: borg
-    image: ghcr.io/example/borgbackup-essentials:latest
+    image: ghcr.io/frederikb96/kube-borg-backup-essentials:latest
     timeoutSeconds: 86400
     resources:
       requests:

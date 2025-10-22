@@ -1,9 +1,9 @@
-{{- define "snapshot-borgbackup.name" -}}
+{{- define "kube-borg-backup.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "snapshot-borgbackup.fullname" -}}
-{{- $name := include "snapshot-borgbackup.name" . -}}
+{{- define "kube-borg-backup.fullname" -}}
+{{- $name := include "kube-borg-backup.name" . -}}
 {{- if .Values.fullnameOverride -}}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
@@ -11,18 +11,18 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "snapshot-borgbackup.labels" -}}
+{{- define "kube-borg-backup.labels" -}}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
-app.kubernetes.io/name: {{ include "snapshot-borgbackup.name" . }}
+app.kubernetes.io/name: {{ include "kube-borg-backup.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/version: {{ .Chart.AppVersion }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
-{{- define "snapshot-borgbackup.snapshotConfigSecret" -}}
-{{ include "snapshot-borgbackup.fullname" . }}-snapshot-config
+{{- define "kube-borg-backup.snapshotConfigSecret" -}}
+{{ include "kube-borg-backup.fullname" . }}-snapshot-config
 {{- end -}}
 
-{{- define "snapshot-borgbackup.borgConfigSecret" -}}
-{{ include "snapshot-borgbackup.fullname" . }}-borg-config
+{{- define "kube-borg-backup.borgConfigSecret" -}}
+{{ include "kube-borg-backup.fullname" . }}-borg-config
 {{- end -}}

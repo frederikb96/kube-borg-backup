@@ -1,10 +1,10 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ .Values.snapshot.name | default (include "snapshot-borgbackup.fullname" .) }}
+  name: {{ .Values.snapshot.name | default (include "kube-borg-backup.fullname" .) }}
   namespace: {{ .Values.namespace.name }}
   labels:
-    {{- include "snapshot-borgbackup.labels" . | nindent 4 }}
+    {{- include "kube-borg-backup.labels" . | nindent 4 }}
 spec:
   schedule: {{ .Values.snapshot.cron.schedule | quote }}
   concurrencyPolicy: {{ .Values.snapshot.cron.concurrencyPolicy }}
@@ -29,4 +29,4 @@ spec:
           volumes:
             - name: config
               secret:
-                secretName: {{ include "snapshot-borgbackup.snapshotConfigSecret" . }}
+                secretName: {{ include "kube-borg-backup.snapshotConfigSecret" . }}
