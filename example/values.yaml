@@ -1,82 +1,111 @@
-## -- Namespace management
+## Example configuration for Immich backup with PostgreSQL database consistency hooks
+##
+## This demonstrates:
+## - PostgreSQL pg_backup_start/stop hooks for database consistency
+## - Multiple PVCs (database, model cache, backend data)
+## - Tiered retention policy
+## - BorgBackup configuration for offsite backup
+
+## Namespace configuration
 namespace:
   create: false
   name: immich
 
-## -- Name that ServiceAccount should have
+## ServiceAccount for RBAC permissions
 serviceAccount:
   name: immich-backup-serviceaccount
 
-## -- Snapshot CronJob configuration
+## =============================================================================
+## Snapshot Configuration
+## =============================================================================
 snapshot:
   name: immich-snapshot
   containerName: immich-snapshot
+
   image:
     repository: ghcr.io/frederikb96/kube-borg-backup-controller
     tag: latest
     pullPolicy: IfNotPresent
+
   cron:
+    # Run every hour
     schedule: "0 * * * *"
     concurrencyPolicy: Forbid
     startingDeadlineSeconds: 60
     successfulJobsHistoryLimit: 1
     failedJobsHistoryLimit: 1
-  hooks:
-    pre: |-
-      VERSION_NUM=$(kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
-        bash -c 'psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;"')
-      [ -n "$VERSION_NUM" ] || { echo "Failed to get PG version"; exit 1; }
 
-      echo "🗄️ Pausing db"
-      if [ "$VERSION_NUM" -ge 150000 ]; then
-        kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
-          bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_backup_start(label => '\''immich_snap'\'', fast => true);"'
-      else
-        kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
-          bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_start_backup('\''immich_snap'\'', true);"'
-      fi
-    post: |-
-      echo "🗄️ Unpausing db"
-      if [ "$VERSION_NUM" -ge 150000 ]; then
-        kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
-          bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_backup_stop(wait_for_archive => true);"' || echo "No backup in progress"
-      else
-        kubectl exec -n {{ .Values.namespace.name }} immich-postgres-0 -- \
-          bash -c 'psql -U "$DB_USERNAME" -c "SELECT pg_stop_backup(true);"' || echo "No backup in progress"
-      fi
-      echo "✅ Database unpaused"
-  snapshots:
-    - pvc: immich-db-pvc
-      class: longhorn
-      keep:
-        n: 12
-        m_hours: 24
-    - pvc: immich-backend-pvc
-      class: zfs-generic-smb-csi
-      keep:
-        n: 12
-        m_hours: 24
-    - pvc: immich-model-cache-pvc
-      class: longhorn
-      keep:
-        n: 12
-        m_hours: 24
+  # Tiered retention: Keep hourly, daily, weekly, monthly snapshots
+  retention:
+    hourly: 24    # Last 24 hours
+    daily: 7      # Last 7 days
+    weekly: 4     # Last 4 weeks
+    monthly: 3    # Last 3 months
 
-## -- BorgBackup configuration
+  # PVCs to snapshot
+  pvcs:
+    # PostgreSQL database with consistency hooks
+    - name: immich-db-pvc
+      snapshotClass: longhorn
+      hooks:
+        pre:
+          # Check PostgreSQL version and call appropriate backup start function
+          - pod: immich-postgres-0
+            container: postgres
+            command:
+              - /bin/bash
+              - -c
+              - |
+                VERSION_NUM=$(psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;")
+                if [ "$VERSION_NUM" -ge 150000 ]; then
+                  psql -U "$DB_USERNAME" -c "SELECT pg_backup_start(label => 'immich_snap', fast => true);"
+                else
+                  psql -U "$DB_USERNAME" -c "SELECT pg_start_backup('immich_snap', true);"
+                fi
+        post:
+          # Stop database backup mode
+          - pod: immich-postgres-0
+            container: postgres
+            command:
+              - /bin/bash
+              - -c
+              - |
+                VERSION_NUM=$(psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;")
+                if [ "$VERSION_NUM" -ge 150000 ]; then
+                  psql -U "$DB_USERNAME" -c "SELECT pg_backup_stop(wait_for_archive => true);" || echo "No backup in progress"
+                else
+                  psql -U "$DB_USERNAME" -c "SELECT pg_stop_backup(true);" || echo "No backup in progress"
+                fi
+
+    # Backend data (no hooks needed for file-based storage)
+    - name: immich-backend-pvc
+      snapshotClass: zfs-generic-smb-csi
+
+    # Model cache (no hooks needed)
+    - name: immich-model-cache-pvc
+      snapshotClass: longhorn
+
+## =============================================================================
+## BorgBackup Configuration
+## =============================================================================
 borgbackup:
   name: immich-backup
   containerName: immich-backup
+
   image:
     repository: ghcr.io/frederikb96/kube-borg-backup-controller
     tag: latest
     pullPolicy: IfNotPresent
+
   cron:
+    # Run every 6 hours at :30
     schedule: "30 */6 * * *"
     concurrencyPolicy: Forbid
     startingDeadlineSeconds: 300
     successfulJobsHistoryLimit: 1
     failedJobsHistoryLimit: 1
     activeDeadlineSeconds: 86400
+
   pod:
     name: immich-borg
     image: ghcr.io/frederikb96/kube-borg-backup-essentials:latest
@@ -85,29 +114,39 @@ borgbackup:
       requests:
         memory: "1Gi"
         cpu: "500m"
+
+  # Borg repository retention policy
   borgFlags: "--keep-hourly=24 --keep-daily=7 --keep-weekly=4 --keep-monthly=3 --keep-yearly=1"
+
+  # Borg cache for improved performance
   cache:
     create: true
     pvcName: immich-borg-cache
     storageClassName: openebs-hostpath
     size: 5Gi
+
+  # SSH key for BorgBase access
   sshSecret:
-    name: borg-ssh
+    name: immich-borg-ssh
     privateKey: |
       -----BEGIN OPENSSH PRIVATE KEY-----
       YOUR_PRIVATE_KEY_HERE
       -----END OPENSSH PRIVATE KEY-----
+
+  # Borg repository credentials
   repoSecret:
-    name: borg-secrets
-    BORG_REPO: YOUR_BORG_REPO
-    BORG_PASSPHRASE: YOUR_PASSPHRASE
+    name: immich-borg-secrets
+    BORG_REPO: "user@borgbase.com:repo/immich"
+    BORG_PASSPHRASE: "YOUR_PASSPHRASE_HERE"
+
+  # PVCs to backup (must match snapshot PVCs above)
   backups:
-    - name: db
+    - name: immich-db
       pvc: immich-db-pvc
       class: longhorn-temp
-    - name: model
-      pvc: immich-model-cache-pvc
-      class: longhorn-temp
-    - name: immich
+    - name: immich-backend
       pvc: immich-backend-pvc
       class: zfs-generic-smb-csi-delete
+    - name: immich-model-cache
+      pvc: immich-model-cache-pvc
+      class: longhorn-temp

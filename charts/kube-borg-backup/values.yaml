@@ -1,58 +1,123 @@
-## -- Namespace management
+## Namespace configuration
 namespace:
+  # Create namespace if it doesn't exist
   create: false
-  name: somespace
+  # Namespace name where resources will be deployed
+  name: default
 
-## -- Name that ServiceAccount should have
+## ServiceAccount for RBAC permissions
 serviceAccount:
-  name: backup-account
+  # Name of the ServiceAccount
+  # Needs permissions: volumesnapshots (create/list/delete), pvcs (create/list/delete), pods/exec (create)
+  name: kube-borg-backup
 
-## -- Snapshot CronJob configuration
+## =============================================================================
+## Snapshot Configuration
+## =============================================================================
+## Creates VolumeSnapshots for PVCs with tiered retention policy.
+## Supports pre/post hooks for database consistency (e.g., pg_backup_start/stop).
+##
+## IMPORTANT NOTES:
+## - Pre-hooks run SEQUENTIALLY before snapshots. If ANY fails, process aborts.
+## - Snapshots are created IN PARALLEL for speed.
+## - Post-hooks run SEQUENTIALLY after snapshots. They ALWAYS run, even on failure.
+## - Post-hooks also run on pod termination (SIGTERM) for safety.
+##
 snapshot:
+  # CronJob name
   name: snapshot
+  # Container name in the CronJob
   containerName: snapshot
-  image:
-    repository: ghcr.io/frederikb96/kube-borg-backup-controller
-    tag: latest
-    pullPolicy: IfNotPresent
-  cron:
-    schedule: "0 * * * *"
-    concurrencyPolicy: Forbid
-    startingDeadlineSeconds: 60
-    successfulJobsHistoryLimit: 1
-    failedJobsHistoryLimit: 1
-  hooks:
-    pre: |-
-      echo "🗄️ Pausing db"
-    post: |-
-      echo "🗄️ Unpausing db"
-  snapshots:
-    - pvc: app-db-pvc
-      class: longhorn
-      keep:
-        n: 12
-        m_hours: 24
-    - pvc: app-data-pvc
-      class: smb
-      keep:
-        n: 12
-        m_hours: 24
 
-## -- BorgBackup configuration
-borgbackup:
-  name: borgbackup
-  containerName: backup
+  # Container image configuration
   image:
     repository: ghcr.io/frederikb96/kube-borg-backup-controller
     tag: latest
     pullPolicy: IfNotPresent
+
+  # CronJob schedule configuration
   cron:
-    schedule: "30 */6 * * *"
+    # When to run snapshots (cron format)
+    # Example: "0 */4 * * *" = Every 4 hours
+    schedule: "0 */4 * * *"
+    # Prevent concurrent snapshot jobs
     concurrencyPolicy: Forbid
-    startingDeadlineSeconds: 300
+    # Max seconds to wait before giving up on starting a job
+    startingDeadlineSeconds: 60
+    # Number of successful jobs to keep
     successfulJobsHistoryLimit: 1
+    # Number of failed jobs to keep
     failedJobsHistoryLimit: 1
+
+  # Snapshot retention policy (tiered retention)
+  # Keeps 1 snapshot per time bucket (hourly/daily/weekly/monthly)
+  retention:
+    # Keep 1 snapshot per hour for last N hours
+    hourly: 24
+    # Keep 1 snapshot per day for last N days
+    daily: 7
+    # Keep 1 snapshot per week for last N weeks
+    weekly: 4
+    # Keep 1 snapshot per month for last N months
+    monthly: 3
+
+  # PVCs to snapshot
+  pvcs:
+    # Example with database that needs pause/resume
+    - name: postgres-data
+      snapshotClass: longhorn
+      hooks:
+        # Pre-hooks: Run BEFORE snapshots (executed sequentially, fail-fast)
+        # Use pod-exec to run commands in pods for database consistency
+        pre:
+          - pod: postgres-0
+            container: postgres  # Optional: specify container if pod has multiple
+            command: ["psql", "-U", "postgres", "-c", "SELECT pg_backup_start()"]
+        # Post-hooks: Run AFTER snapshots (executed sequentially, ALWAYS run)
+        # These also run on pod termination (SIGTERM) for safety
+        post:
+          - pod: postgres-0
+            command: ["psql", "-U", "postgres", "-c", "SELECT pg_backup_stop()"]
+
+    # Example without hooks (file-based storage)
+    - name: app-data
+      snapshotClass: longhorn
+      # No hooks needed for file-based storage
+
+## =============================================================================
+## BorgBackup Configuration
+## =============================================================================
+## Backs up VolumeSnapshots to BorgBackup repository.
+##
+borgbackup:
+  # CronJob name
+  name: borgbackup
+  # Container name in the CronJob
+  containerName: backup
+
+  # Container image configuration
+  image:
+    repository: ghcr.io/frederikb96/kube-borg-backup-controller
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  # CronJob schedule configuration
+  cron:
+    # When to run backups (cron format)
+    # Example: "30 */6 * * *" = Every 6 hours at :30
+    schedule: "30 */6 * * *"
+    # Prevent concurrent backup jobs
+    concurrencyPolicy: Forbid
+    # Max seconds to wait before giving up on starting a job
+    startingDeadlineSeconds: 300
+    # Number of successful jobs to keep
+    successfulJobsHistoryLimit: 1
+    # Number of failed jobs to keep
+    failedJobsHistoryLimit: 1
+    # Max seconds for backup job to complete
     activeDeadlineSeconds: 86400
+
+  # Borg pod configuration (spawned by backup controller)
   pod:
     name: borg
     image: ghcr.io/frederikb96/kube-borg-backup-essentials:latest
@@ -61,26 +126,36 @@ borgbackup:
       requests:
         memory: "1Gi"
         cpu: "500m"
+
+  # Borg prune flags (retention policy for borg repository)
   borgFlags: "--keep-hourly=24 --keep-daily=7 --keep-weekly=4 --keep-monthly=3 --keep-yearly=1"
+
+  # Borg cache PVC (improves backup performance)
   cache:
     create: true
     pvcName: borg-cache
-    storageClassName: openebs-hostpath
+    storageClassName: local-path
     size: 5Gi
+
+  # SSH private key for borg repository access
   sshSecret:
     name: borg-ssh
     privateKey: |
       -----BEGIN OPENSSH PRIVATE KEY-----
-      somekey
+      your-ssh-private-key-here
       -----END OPENSSH PRIVATE KEY-----
+
+  # Borg repository credentials
   repoSecret:
     name: borg-secrets
-    BORG_REPO: example
-    BORG_PASSPHRASE: example
+    BORG_REPO: "user@borgbase.com:repo"
+    BORG_PASSPHRASE: "your-borg-passphrase"
+
+  # PVCs to backup (must have corresponding snapshots created above)
   backups:
-    - name: app-db
-      pvc: app-db-pvc
+    - name: postgres-db
+      pvc: postgres-data
       class: longhorn
     - name: app-data
-      pvc: app-data-pvc
-      class: smb
+      pvc: app-data
+      class: longhorn
