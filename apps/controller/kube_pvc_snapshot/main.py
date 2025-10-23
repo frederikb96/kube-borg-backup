@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="PVC snapshot helper")
     parser.add_argument("-c", "--config", help="Path to config file")
+    parser.add_argument("--test", action="store_true", help="Test mode: 5sec delay before snapshots, log to /tmp/snapshot-test.log")
     return parser.parse_args()
 
 
@@ -433,6 +434,17 @@ def cleanup_post_hooks():
     sys.exit(0)
 
 
+def log_test(msg: str, test_mode: bool = False) -> None:
+    """Log message to stdout and optionally to test log file."""
+    print(msg)
+    if test_mode:
+        try:
+            with open("/tmp/snapshot-test.log", "a") as f:
+                f.write(f"{datetime.now(timezone.utc).isoformat()} - {msg}\n")
+        except Exception:
+            pass
+
+
 def main() -> None:
     """Main execution flow."""
     global _config, _namespace, _core_api
@@ -446,10 +458,24 @@ def main() -> None:
 
     namespace = get_namespace()
     _namespace = namespace
-    print(f"🔧 Using namespace: {namespace}\n")
 
+    test_mode = args.test
+    if test_mode:
+        # Clear test log file
+        try:
+            with open("/tmp/snapshot-test.log", "w") as f:
+                f.write(f"=== Snapshot Test Started at {datetime.now(timezone.utc).isoformat()} ===\n")
+        except Exception:
+            pass
     custom_api, core_api = init_clients()
     _core_api = core_api
+
+    log_test(f"🔧 Using namespace: {namespace}", test_mode)
+
+    if test_mode:
+        log_test("⏱️  TEST MODE: Waiting 5 seconds before starting snapshots...", test_mode)
+        time.sleep(5)
+        log_test("✅ TEST MODE: Delay complete, proceeding with snapshots", test_mode)
 
     snapshot_config = cfg.get("snapshots", {})
     pvcs = snapshot_config.get("pvcs", [])
@@ -479,9 +505,9 @@ def main() -> None:
             run_hooks(core_api, all_pre_hooks, namespace, "pre")
 
         # Step 2: Create snapshots in parallel
-        print(f"\n{'='*60}")
-        print(f"📸 Creating {len(pvcs)} snapshot(s) in parallel")
-        print(f"{'='*60}\n")
+        log_test(f"\n{'='*60}", test_mode)
+        log_test(f"📸 Creating {len(pvcs)} snapshot(s) in parallel", test_mode)
+        log_test(f"{'='*60}\n", test_mode)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(pvcs)) as executor:
             futures = {
@@ -500,9 +526,9 @@ def main() -> None:
 
         # Step 3: Prune old snapshots
         if retention:
-            print(f"\n{'='*60}")
-            print(f"🗑️  Pruning old snapshots")
-            print(f"{'='*60}\n")
+            log_test(f"\n{'='*60}", test_mode)
+            log_test(f"🗑️  Pruning old snapshots", test_mode)
+            log_test(f"{'='*60}\n", test_mode)
 
             for pvc_cfg in pvcs:
                 pvc_name = pvc_cfg.get("name")
@@ -517,16 +543,23 @@ def main() -> None:
         # Step 4: ALWAYS run post-hooks (even on failure)
         if all_post_hooks:
             try:
+                log_test(f"\n{'='*60}", test_mode)
+                log_test(f"🔄 Running post-hooks ({len(all_post_hooks)} total)", test_mode)
+                log_test(f"{'='*60}\n", test_mode)
                 run_hooks(core_api, all_post_hooks, namespace, "post")
             except Exception as exc:
-                print(f"❌ Post-hooks failed: {exc}", file=sys.stderr)
+                msg = f"❌ Post-hooks failed: {exc}"
+                log_test(msg, test_mode)
+                print(msg, file=sys.stderr)
                 snapshot_failed = True
 
     if snapshot_failed:
-        print("\n❌ Snapshot process completed with errors", file=sys.stderr)
+        msg = "\n❌ Snapshot process completed with errors"
+        log_test(msg, test_mode)
+        print(msg, file=sys.stderr)
         sys.exit(1)
 
-    print("\n✅ Snapshot process completed successfully!")
+    log_test("\n✅ Snapshot process completed successfully!", test_mode)
 
 
 if __name__ == "__main__":
