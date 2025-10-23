@@ -34,7 +34,7 @@ import signal
 import sys
 import time
 import concurrent.futures
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -90,7 +90,11 @@ def load_config(cli_path: Optional[str]) -> Dict[str, Any]:
 
 
 def get_namespace() -> str:
-    """Get current namespace from service account or config."""
+    """Get current namespace from env, service account, or default."""
+    # Try environment variable first (for testing)
+    env_namespace = os.getenv("NAMESPACE")
+    if env_namespace:
+        return env_namespace
     # Try to read from service account (in-cluster)
     sa_namespace_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
     if sa_namespace_path.exists():
@@ -214,7 +218,7 @@ def create_snapshot(
     Returns:
         Snapshot name
     """
-    ts = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     snap_name = f"{pvc_name}-snap-{ts}"
 
     body = {
@@ -313,7 +317,7 @@ def prune_snapshots_tiered(
         reverse=True
     )
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     preserve_set = set()
 
     # Hourly: Keep 1 per hour for last N hours
