@@ -7,12 +7,13 @@ metadata:
     {{- include "kube-borg-backup.labels" . | nindent 4 }}
 spec:
   schedule: {{ .Values.snapshot.cron.schedule | quote }}
-  concurrencyPolicy: {{ .Values.snapshot.cron.concurrencyPolicy }}
+  concurrencyPolicy: Forbid
   startingDeadlineSeconds: {{ .Values.snapshot.cron.startingDeadlineSeconds }}
   successfulJobsHistoryLimit: {{ .Values.snapshot.cron.successfulJobsHistoryLimit }}
   failedJobsHistoryLimit: {{ .Values.snapshot.cron.failedJobsHistoryLimit }}
   jobTemplate:
     spec:
+      activeDeadlineSeconds: {{ .Values.snapshot.timeout }}
       backoffLimit: 0
       template:
         spec:

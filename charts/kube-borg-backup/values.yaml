@@ -40,14 +40,21 @@ snapshot:
     # When to run snapshots (cron format)
     # Example: "0 */4 * * *" = Every 4 hours
     schedule: "0 */4 * * *"
-    # Prevent concurrent snapshot jobs
-    concurrencyPolicy: Forbid
     # Max seconds to wait before giving up on starting a job
     startingDeadlineSeconds: 60
     # Number of successful jobs to keep
     successfulJobsHistoryLimit: 1
     # Number of failed jobs to keep
     failedJobsHistoryLimit: 1
+
+  # CronJob timeout (activeDeadlineSeconds)
+  # Maximum time in seconds for the snapshot controller to complete all snapshots
+  # The controller creates snapshots in parallel, so this should account for:
+  # - Pre-hook execution time (sequential, fail-fast)
+  # - Snapshot creation time (parallel)
+  # - Post-hook execution time (sequential, always run)
+  # Example: 600 = 10 min
+  timeout: 600
 
   # Snapshot retention policy (tiered retention)
   # Keeps 1 snapshot per time bucket (hourly/daily/weekly/monthly)
@@ -106,29 +113,43 @@ borgbackup:
     # When to run backups (cron format)
     # Example: "30 */6 * * *" = Every 6 hours at :30
     schedule: "30 */6 * * *"
-    # Prevent concurrent backup jobs
-    concurrencyPolicy: Forbid
     # Max seconds to wait before giving up on starting a job
     startingDeadlineSeconds: 300
     # Number of successful jobs to keep
     successfulJobsHistoryLimit: 1
     # Number of failed jobs to keep
     failedJobsHistoryLimit: 1
-    # Max seconds for backup job to complete
-    activeDeadlineSeconds: 86400
+
+  # CronJob timeout (activeDeadlineSeconds)
+  # Maximum time in seconds for the backup controller to complete all backups
+  # The controller processes backups SEQUENTIALLY (borg limitation), so this should
+  # account for the sum of all individual backup timeouts plus overhead
+  # Example: 7200 = 2 hours for multiple sequential backups
+  timeout: 7200
 
   # Borg pod configuration (spawned by backup controller)
   pod:
     name: borg
     image: ghcr.io/frederikb96/kube-borg-backup-essentials:latest
-    timeoutSeconds: 86400
     resources:
       requests:
         memory: "1Gi"
         cpu: "500m"
 
-  # Borg prune flags (retention policy for borg repository)
-  borgFlags: "--keep-hourly=24 --keep-daily=7 --keep-weekly=4 --keep-monthly=3 --keep-yearly=1"
+  # Borg retention policy (applied during borg prune)
+  # These control how many archives to keep in the borg repository
+  # Note: This is different from snapshot retention (which uses tiered buckets)
+  retention:
+    # Keep 1 archive per hour for last N hours
+    hourly: 24
+    # Keep 1 archive per day for last N days
+    daily: 7
+    # Keep 1 archive per week for last N weeks
+    weekly: 4
+    # Keep 1 archive per month for last N months
+    monthly: 3
+    # Keep 1 archive per year for last N years
+    yearly: 1
 
   # Borg cache PVC (improves backup performance)
   cache:
@@ -155,7 +176,30 @@ borgbackup:
   backups:
     - name: postgres-db
       pvc: postgres-data
+      # Storage class for the CLONE PVC (not the original PVC)
+      # The controller creates temporary clone PVCs from snapshots for backup
+      # IMPORTANT: Choose a storage class with "Delete" reclaim policy to ensure
+      #            clone PVCs are automatically cleaned up at the storage layer
+      #            when deleted, preventing storage waste
+      # Common choices:
+      # - Longhorn with "Delete" policy (ephemeral clones)
+      # - ZFS with "Delete" policy (ephemeral clones)
+      # - local-path for testing (usually "Delete" by default)
       class: longhorn
+      # Timeout for this specific backup (seconds) - REQUIRED
+      # This controls TWO things:
+      # 1. Pod activeDeadlineSeconds: How long the borg pod is allowed to run
+      # 2. Borg --lock-wait: How long borg waits for repository lock
+      # Note: Pod will be killed before lock-wait fires, but we set them equal
+      #       to ensure lock-wait is never too small
+      # Example: 3600 = 1 hour for large database backup
+      timeout: 3600
+      # Optional: Override clone PVC bind timeout (default: 300s)
+      # cloneBindTimeout: 300
+
     - name: app-data
       pvc: app-data
       class: longhorn
+      # Smaller timeout for smaller dataset
+      # Example: 1800 = 30 minutes
+      timeout: 1800
