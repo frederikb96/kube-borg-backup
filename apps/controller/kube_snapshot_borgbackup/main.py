@@ -99,10 +99,10 @@ def cleanup_all_resources() -> None:
 
     log_msg("\n\n🛑 Received SIGTERM - cleaning up all tracked resources...")
 
-    # Clean up credentials secrets
+    # Clean up config secrets
     for secret_name in _tracked_resources["ssh_secrets"]:
         try:
-            log_msg(f"🗑️  Deleting credentials secret: {secret_name}")
+            log_msg(f"🗑️  Deleting config secret: {secret_name}")
             _core_api.delete_namespaced_secret(secret_name, _namespace)
         except ApiException as exc:
             log_msg(f"⚠️  Failed to delete secret {secret_name}: {exc}")
@@ -215,9 +215,13 @@ def create_borg_secret(
     borg_repo: str,
     borg_passphrase: str,
     ssh_key: str,
+    retention: Dict[str, int],
+    backup_name: str,
+    backup_dir: str,
+    lock_wait: int,
     namespace: str
 ) -> None:
-    """Create ephemeral secret with all borg credentials.
+    """Create ephemeral secret with borg configuration file.
 
     Args:
         v1: CoreV1Api client
@@ -225,11 +229,34 @@ def create_borg_secret(
         borg_repo: Borg repository URL
         borg_passphrase: Borg passphrase
         ssh_key: SSH private key content
+        retention: Retention policy (hourly, daily, weekly, monthly, yearly)
+        backup_name: Backup identifier (archive prefix)
+        backup_dir: Directory to backup
+        lock_wait: Lock wait timeout in seconds
         namespace: Kubernetes namespace
 
     Raises:
         ApiException: If secret creation fails
     """
+    # Build config dictionary
+    config = {
+        "borgRepo": borg_repo,
+        "borgPassphrase": borg_passphrase,
+        "sshPrivateKey": ssh_key,
+        "prefix": backup_name,
+        "backupDir": backup_dir,
+        "lockWait": lock_wait,
+    }
+
+    # Add retention if specified
+    if retention:
+        config["retention"] = {
+            k: v for k, v in retention.items() if v is not None
+        }
+
+    # Serialize to YAML
+    config_yaml = yaml.dump(config, default_flow_style=False, sort_keys=False)
+
     body = client.V1Secret(
         metadata=client.V1ObjectMeta(
             name=secret_name,
@@ -242,9 +269,7 @@ def create_borg_secret(
         ),
         type="Opaque",
         string_data={
-            "BORG_REPO": borg_repo,
-            "BORG_PASSPHRASE": borg_passphrase,
-            "SSH_PRIVATE_KEY": ssh_key
+            "config.yaml": config_yaml
         }
     )
 
@@ -318,9 +343,8 @@ def build_borg_pod_manifest(
     backup_name: str,
     clone_pvc: str,
     pod_config: Dict[str, Any],
-    creds_secret: str,
+    config_secret: str,
     cache_pvc: str,
-    retention: Dict[str, int],
     pvc_timeout: int,
     namespace: str
 ) -> Dict[str, Any]:
@@ -331,65 +355,14 @@ def build_borg_pod_manifest(
         backup_name: Backup identifier (archive prefix)
         clone_pvc: Name of clone PVC to mount
         pod_config: Pod configuration (image, resources)
-        creds_secret: Name of ephemeral secret containing all borg credentials
+        config_secret: Name of ephemeral secret containing config.yaml
         cache_pvc: Name of borg cache PVC
-        retention: Retention policy (hourly, daily, weekly, monthly, yearly)
-        pvc_timeout: Per-PVC timeout (pod activeDeadlineSeconds and lock-wait)
+        pvc_timeout: Per-PVC timeout (pod activeDeadlineSeconds)
         namespace: Kubernetes namespace
 
     Returns:
         Pod manifest as dict
     """
-    # Build retention env vars
-    env_vars = [
-        {"name": "BORG_PREFIX", "value": backup_name},
-        {"name": "BACKUP_DIR", "value": "/data"},
-        {"name": "BORG_LOCK_WAIT", "value": str(pvc_timeout)},
-    ]
-
-    # Add retention flags if specified
-    if retention.get("hourly"):
-        env_vars.append({"name": "BORG_KEEP_HOURLY", "value": str(retention["hourly"])})
-    if retention.get("daily"):
-        env_vars.append({"name": "BORG_KEEP_DAILY", "value": str(retention["daily"])})
-    if retention.get("weekly"):
-        env_vars.append({"name": "BORG_KEEP_WEEKLY", "value": str(retention["weekly"])})
-    if retention.get("monthly"):
-        env_vars.append({"name": "BORG_KEEP_MONTHLY", "value": str(retention["monthly"])})
-    if retention.get("yearly"):
-        env_vars.append({"name": "BORG_KEEP_YEARLY", "value": str(retention["yearly"])})
-
-    # Add borg credentials from secret
-    env_vars.extend([
-        {
-            "name": "BORG_REPO",
-            "valueFrom": {
-                "secretKeyRef": {
-                    "name": creds_secret,
-                    "key": "BORG_REPO"
-                }
-            }
-        },
-        {
-            "name": "BORG_PASSPHRASE",
-            "valueFrom": {
-                "secretKeyRef": {
-                    "name": creds_secret,
-                    "key": "BORG_PASSPHRASE"
-                }
-            }
-        },
-        {
-            "name": "SSH_PRIVATE_KEY",
-            "valueFrom": {
-                "secretKeyRef": {
-                    "name": creds_secret,
-                    "key": "SSH_PRIVATE_KEY"
-                }
-            }
-        }
-    ])
-
     manifest = {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -413,8 +386,12 @@ def build_borg_pod_manifest(
                     "securityContext": {
                         "privileged": pod_config.get("privileged", True)
                     },
-                    "env": env_vars,
                     "volumeMounts": [
+                        {
+                            "name": "config",
+                            "mountPath": "/config",
+                            "readOnly": True
+                        },
                         {
                             "name": "data",
                             "mountPath": "/data",
@@ -429,6 +406,12 @@ def build_borg_pod_manifest(
                 }
             ],
             "volumes": [
+                {
+                    "name": "config",
+                    "secret": {
+                        "secretName": config_secret
+                    }
+                },
                 {
                     "name": "data",
                     "persistentVolumeClaim": {
@@ -591,7 +574,7 @@ def process_backup(
 
     clone_name = None
     pod_name = None
-    ssh_secret_name = None
+    config_secret_name = None
 
     try:
         # Step 1: Find latest snapshot
@@ -625,19 +608,24 @@ def process_backup(
             log_msg(f"✅ TEST MODE: Backup simulation successful")
             return True
 
-        # Step 4a: Create ephemeral secret with all borg credentials
+        # Step 4a: Create ephemeral secret with config file
         pod_name = f"{release_name}-borg-{name}-{ts}"
-        ssh_secret_name = f"{pod_name}-creds"
-        log_msg(f"🔐 Creating ephemeral credentials secret: {ssh_secret_name}")
-        create_borg_secret(v1, ssh_secret_name, borg_repo, borg_passphrase, ssh_private_key, namespace)
-        log_msg(f"✅ Credentials secret created")
+        config_secret_name = f"{pod_name}-config"
+        log_msg(f"🔐 Creating ephemeral config secret: {config_secret_name}")
+        create_borg_secret(
+            v1, config_secret_name,
+            borg_repo, borg_passphrase, ssh_private_key,
+            retention, name, "/data", timeout,
+            namespace
+        )
+        log_msg(f"✅ Config secret created")
 
         # Step 4b: Build and spawn borg pod
         log_msg(f"🚀 Spawning borg pod: {pod_name}")
         manifest = build_borg_pod_manifest(
             pod_name, name, clone_name, pod_config,
-            ssh_secret_name, cache_pvc,
-            retention, timeout, namespace
+            config_secret_name, cache_pvc,
+            timeout, namespace
         )
 
         if not spawn_borg_pod(v1, manifest, namespace, timeout):
@@ -655,9 +643,9 @@ def process_backup(
 
     finally:
         # Always cleanup
-        if ssh_secret_name:
-            log_msg(f"🗑️  Cleaning up credentials secret: {ssh_secret_name}")
-            delete_secret(v1, ssh_secret_name, namespace)
+        if config_secret_name:
+            log_msg(f"🗑️  Cleaning up config secret: {config_secret_name}")
+            delete_secret(v1, config_secret_name, namespace)
         if pod_name:
             log_msg(f"🗑️  Cleaning up borg pod: {pod_name}")
             delete_pod(v1, pod_name, namespace)
