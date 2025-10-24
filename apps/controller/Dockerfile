@@ -1,5 +1,8 @@
 FROM python:3.11-slim
 
+# Ensure Python output is not buffered (important for kubectl logs)
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 COPY requirements.txt .

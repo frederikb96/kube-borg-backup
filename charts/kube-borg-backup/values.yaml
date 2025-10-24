@@ -120,6 +120,10 @@ borgbackup:
   # Borg pod configuration (spawned by backup controller)
   pod:
     image: ghcr.io/frederikb96/kube-borg-backup-essentials:latest
+    # Privileged mode is enabled by default for maximum PVC compatibility
+    # Bypasses filesystem permission checks, works with any PVC ownership (PostgreSQL, MySQL, etc.)
+    # Uncomment to disable if cluster security policies restrict privileged containers:
+    # privileged: false
     resources:
       requests:
         memory: "1Gi"
@@ -147,19 +151,18 @@ borgbackup:
     storageClassName: local-path
     size: 5Gi
 
-  # SSH private key for borg repository access
-  sshSecret:
-    name: borg-ssh
-    privateKey: |
-      -----BEGIN OPENSSH PRIVATE KEY-----
-      your-ssh-private-key-here
-      -----END OPENSSH PRIVATE KEY-----
+  # Borg repository URL (ssh://user@host/repo)
+  borgRepo: "ssh://user@borgbase.com/./repo"
 
-  # Borg repository credentials
-  repoSecret:
-    name: borg-secrets
-    BORG_REPO: "user@borgbase.com:repo"
-    BORG_PASSPHRASE: "your-borg-passphrase"
+  # Borg repository passphrase
+  borgPassphrase: "your-borg-passphrase"
+
+  # SSH private key for repository access
+  # Controller creates ephemeral secrets dynamically per backup
+  sshPrivateKey: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    your-ssh-private-key-here
+    -----END OPENSSH PRIVATE KEY-----
 
   # PVCs to backup (must have corresponding snapshots created above)
   backups:

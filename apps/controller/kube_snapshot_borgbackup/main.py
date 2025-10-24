@@ -32,7 +32,7 @@ SNAP_VERSION = "v1"
 SNAP_PLURAL = "volumesnapshots"
 
 # Global state for SIGTERM handler
-_tracked_resources: Dict[str, List[str]] = {"clone_pvcs": [], "borg_pods": []}
+_tracked_resources: Dict[str, List[str]] = {"clone_pvcs": [], "borg_pods": [], "ssh_secrets": []}
 _namespace: Optional[str] = None
 _core_api: Optional[client.CoreV1Api] = None
 _failures: List[str] = []
@@ -98,6 +98,14 @@ def cleanup_all_resources() -> None:
         return
 
     log_msg("\n\n🛑 Received SIGTERM - cleaning up all tracked resources...")
+
+    # Clean up SSH secrets
+    for secret_name in _tracked_resources["ssh_secrets"]:
+        try:
+            log_msg(f"🗑️  Deleting SSH secret: {secret_name}")
+            _core_api.delete_namespaced_secret(secret_name, _namespace)
+        except ApiException as exc:
+            log_msg(f"⚠️  Failed to delete secret {secret_name}: {exc}")
 
     # Clean up borg pods
     for pod_name in _tracked_resources["borg_pods"]:
@@ -201,33 +209,99 @@ def create_clone_pvc(
     _tracked_resources["clone_pvcs"].append(clone_name)
 
 
-def wait_pvc_bound(
+def create_ssh_secret(
     v1: client.CoreV1Api,
-    name: str,
-    namespace: str,
-    timeout: int = 300
-) -> bool:
-    """Wait for a PVC to reach Bound state.
+    secret_name: str,
+    ssh_key: str,
+    namespace: str
+) -> None:
+    """Create ephemeral SSH secret for borg pod.
 
     Args:
         v1: CoreV1Api client
-        name: PVC name
+        secret_name: Name for the secret
+        ssh_key: SSH private key content
+        namespace: Kubernetes namespace
+
+    Raises:
+        ApiException: If secret creation fails
+    """
+    body = client.V1Secret(
+        metadata=client.V1ObjectMeta(
+            name=secret_name,
+            namespace=namespace,
+            labels={
+                "app": "kube-borg-backup",
+                "managed-by": "kube-borg-backup",
+                "ephemeral": "true"
+            }
+        ),
+        type="Opaque",
+        string_data={"borg-ssh.key": ssh_key}
+    )
+
+    v1.create_namespaced_secret(namespace, body)
+    _tracked_resources["ssh_secrets"].append(secret_name)
+
+
+def wait_clone_pvc_ready(
+    v1: client.CoreV1Api,
+    pvc_name: str,
+    namespace: str,
+    timeout: int = 300
+) -> bool:
+    """Wait for clone PVC to be Bound or WaitForFirstConsumer.
+
+    Handles both Immediate and WaitForFirstConsumer storage classes.
+    For WaitForFirstConsumer, the PVC won't bind until a pod uses it.
+
+    Args:
+        v1: CoreV1Api client
+        pvc_name: Name of PVC to wait for
         namespace: Kubernetes namespace
         timeout: Timeout in seconds
 
     Returns:
-        True if bound, False if timeout
+        True if PVC is ready, False on timeout
     """
-    end = time.time() + timeout
-    while time.time() < end:
-        try:
-            pvc = v1.read_namespaced_persistent_volume_claim(name, namespace)
-            if pvc.status.phase == "Bound":
-                return True
-        except ApiException as exc:
-            log_msg(f"⚠️  Error reading PVC {name}: {exc}")
+    start_time = time.time()
+
+    while True:
+        elapsed = int(time.time() - start_time)
+
+        # Check timeout
+        if elapsed >= timeout:
+            log_msg(f"⏰ Timeout waiting for PVC {pvc_name} after {elapsed}s")
             return False
+
+        try:
+            # Get PVC status
+            pvc = v1.read_namespaced_persistent_volume_claim(pvc_name, namespace)
+            status = pvc.status.phase
+
+            # Check if Bound
+            if status == "Bound":
+                log_msg(f"✅ PVC {pvc_name} is Bound after {elapsed}s")
+                return True
+
+            # Check if WaitForFirstConsumer (ready to be used by pod)
+            if status == "Pending":
+                # Get events for the PVC
+                events = v1.list_namespaced_event(
+                    namespace,
+                    field_selector=f"involvedObject.name={pvc_name},involvedObject.kind=PersistentVolumeClaim"
+                )
+                for event in events.items:
+                    if "WaitForFirstConsumer" in event.message or "waiting for first consumer" in event.message:
+                        log_msg(f"🕓 PVC {pvc_name} waiting for first consumer after {elapsed}s - ready to use")
+                        return True
+
+        except ApiException as exc:
+            log_msg(f"⚠️ Error checking PVC {pvc_name}: {exc}")
+            return False
+
         time.sleep(5)
+
     return False
 
 
@@ -236,7 +310,8 @@ def build_borg_pod_manifest(
     backup_name: str,
     clone_pvc: str,
     pod_config: Dict[str, Any],
-    repo_secret: str,
+    borg_repo: str,
+    borg_passphrase: str,
     ssh_secret: str,
     cache_pvc: str,
     retention: Dict[str, int],
@@ -250,8 +325,9 @@ def build_borg_pod_manifest(
         backup_name: Backup identifier (archive prefix)
         clone_pvc: Name of clone PVC to mount
         pod_config: Pod configuration (image, resources)
-        repo_secret: Name of secret with borg repo credentials
-        ssh_secret: Name of secret with SSH keys
+        borg_repo: Borg repository URL
+        borg_passphrase: Borg passphrase
+        ssh_secret: Name of ephemeral SSH secret
         cache_pvc: Name of borg cache PVC
         retention: Retention policy (hourly, daily, weekly, monthly, yearly)
         pvc_timeout: Per-PVC timeout (pod activeDeadlineSeconds and lock-wait)
@@ -279,26 +355,10 @@ def build_borg_pod_manifest(
     if retention.get("yearly"):
         env_vars.append({"name": "BORG_KEEP_YEARLY", "value": str(retention["yearly"])})
 
-    # Add secret refs
+    # Add borg credentials directly (SSH config handled in run.sh)
     env_vars.extend([
-        {
-            "name": "BORG_REPO",
-            "valueFrom": {
-                "secretKeyRef": {
-                    "name": repo_secret,
-                    "key": "BORG_REPO"
-                }
-            }
-        },
-        {
-            "name": "BORG_PASSPHRASE",
-            "valueFrom": {
-                "secretKeyRef": {
-                    "name": repo_secret,
-                    "key": "BORG_PASSPHRASE"
-                }
-            }
-        }
+        {"name": "BORG_REPO", "value": borg_repo},
+        {"name": "BORG_PASSPHRASE", "value": borg_passphrase}
     ])
 
     manifest = {
@@ -320,6 +380,9 @@ def build_borg_pod_manifest(
                 {
                     "name": "borg",
                     "image": pod_config.get("image", "ghcr.io/frederikb96/kube-borg-backup-essentials:latest"),
+                    "securityContext": {
+                        "privileged": pod_config.get("privileged", True)
+                    },
                     "env": env_vars,
                     "volumeMounts": [
                         {
@@ -450,14 +513,25 @@ def delete_pvc(v1: client.CoreV1Api, name: str, namespace: str) -> None:
         pass
 
 
+def delete_secret(v1: client.CoreV1Api, name: str, namespace: str) -> None:
+    """Delete a secret and remove from tracking."""
+    try:
+        v1.delete_namespaced_secret(name, namespace)
+        if name in _tracked_resources["ssh_secrets"]:
+            _tracked_resources["ssh_secrets"].remove(name)
+    except ApiException:
+        pass
+
+
 def process_backup(
     backup_config: Dict[str, Any],
     v1: client.CoreV1Api,
     snap_api: client.CustomObjectsApi,
     release_name: str,
     pod_config: Dict[str, Any],
-    repo_secret: str,
-    ssh_secret: str,
+    borg_repo: str,
+    borg_passphrase: str,
+    ssh_private_key: str,
     cache_pvc: str,
     retention: Dict[str, int],
     namespace: str,
@@ -471,8 +545,9 @@ def process_backup(
         snap_api: CustomObjectsApi client
         release_name: Helm release fullname for pod naming
         pod_config: Pod configuration
-        repo_secret: Borg repo secret name
-        ssh_secret: SSH secret name
+        borg_repo: Borg repository URL
+        borg_passphrase: Borg passphrase
+        ssh_private_key: SSH private key content
         cache_pvc: Borg cache PVC name
         retention: Retention policy
         namespace: Kubernetes namespace
@@ -485,10 +560,11 @@ def process_backup(
     pvc = backup_config.get("pvc")
     storage_class = backup_config.get("class")
     timeout = backup_config.get("timeout")
-    clone_bind_timeout = backup_config.get("cloneBindTimeout", 300)
+    clone_bind_timeout = backup_config.get("cloneBindTimeout")
 
-    if not (name and pvc and storage_class and timeout):
-        log_msg(f"❌ Backup config missing required fields (name, pvc, class, timeout): {backup_config}")
+    if not all([name, pvc, storage_class, timeout, clone_bind_timeout]):
+        log_msg(f"❌ Backup config missing required fields (name, pvc, class, timeout, cloneBindTimeout): {backup_config}")
+        _failures.append(f"{name or 'unknown'}: Config error - missing required fields")
         return False
 
     log_msg(f"\n{'='*60}")
@@ -497,6 +573,7 @@ def process_backup(
 
     clone_name = None
     pod_name = None
+    ssh_secret_name = None
 
     try:
         # Step 1: Find latest snapshot
@@ -515,13 +592,12 @@ def process_backup(
         create_clone_pvc(v1, snap_api, snap_name, clone_name, storage_class, namespace)
         log_msg(f"✅ Clone PVC created")
 
-        # Step 3: Wait for clone to bind
-        log_msg(f"⏳ Waiting for clone PVC to bind (timeout: {clone_bind_timeout}s)...")
-        if not wait_pvc_bound(v1, clone_name, namespace, clone_bind_timeout):
-            log_msg(f"❌ Clone PVC {clone_name} not bound after {clone_bind_timeout}s")
+        # Step 3: Wait for clone PVC to be ready
+        log_msg(f"⏳ Waiting for clone PVC to be ready (timeout: {clone_bind_timeout}s)...")
+        if not wait_clone_pvc_ready(v1, clone_name, namespace, clone_bind_timeout):
+            log_msg(f"❌ Clone PVC {clone_name} not ready after {clone_bind_timeout}s")
             _failures.append(f"{name}: Clone PVC bind timeout")
             return False
-        log_msg(f"✅ Clone PVC bound")
 
         # Step 4: Spawn borg pod (or skip in test mode)
         if test_mode:
@@ -531,11 +607,18 @@ def process_backup(
             log_msg(f"✅ TEST MODE: Backup simulation successful")
             return True
 
+        # Step 4a: Create ephemeral SSH secret
         pod_name = f"{release_name}-borg-{name}-{ts}"
+        ssh_secret_name = f"{pod_name}-ssh"
+        log_msg(f"🔐 Creating ephemeral SSH secret: {ssh_secret_name}")
+        create_ssh_secret(v1, ssh_secret_name, ssh_private_key, namespace)
+        log_msg(f"✅ SSH secret created")
+
+        # Step 4b: Build and spawn borg pod
         log_msg(f"🚀 Spawning borg pod: {pod_name}")
         manifest = build_borg_pod_manifest(
             pod_name, name, clone_name, pod_config,
-            repo_secret, ssh_secret, cache_pvc,
+            borg_repo, borg_passphrase, ssh_secret_name, cache_pvc,
             retention, timeout, namespace
         )
 
@@ -554,6 +637,9 @@ def process_backup(
 
     finally:
         # Always cleanup
+        if ssh_secret_name:
+            log_msg(f"🗑️  Cleaning up SSH secret: {ssh_secret_name}")
+            delete_secret(v1, ssh_secret_name, namespace)
         if pod_name:
             log_msg(f"🗑️  Cleaning up borg pod: {pod_name}")
             delete_pod(v1, pod_name, namespace)
@@ -591,10 +677,15 @@ def main() -> None:
     release_name = cfg.get("releaseName", "kube-borg-backup")
     backups = cfg.get("backups", [])
     pod_config = cfg.get("pod", {})
-    repo_secret = cfg.get("repoSecret", "borg-secrets")
-    ssh_secret = cfg.get("sshSecret", "borg-ssh")
+    borg_repo = cfg.get("borgRepo")
+    borg_passphrase = cfg.get("borgPassphrase")
+    ssh_private_key = cfg.get("sshPrivateKey")
     cache_pvc = cfg.get("cachePVC", "borg-cache")
     retention = cfg.get("retention", {})
+
+    if not all([borg_repo, borg_passphrase, ssh_private_key]):
+        log_msg("❌ Config missing required fields: borgRepo, borgPassphrase, sshPrivateKey")
+        sys.exit(2)
 
     if not backups:
         log_msg("⚠️  No backups configured")
@@ -610,7 +701,7 @@ def main() -> None:
     for backup_cfg in backups:
         success = process_backup(
             backup_cfg, v1, snap_api, release_name, pod_config,
-            repo_secret, ssh_secret, cache_pvc,
+            borg_repo, borg_passphrase, ssh_private_key, cache_pvc,
             retention, namespace, test_mode
         )
         # Continue even on failure (report all failures at end)

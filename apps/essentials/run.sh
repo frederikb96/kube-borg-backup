@@ -4,6 +4,12 @@ set -euo pipefail
 : "${BORG_REPO?BORG_REPO env missing}"
 : "${BORG_PASSPHRASE?BORG_PASSPHRASE env missing}"
 
+# SSH configuration for BorgBackup
+# Key mounted via Kubernetes secret at /root/.ssh/borg-ssh.key
+# IdentitiesOnly=yes is CRITICAL with multiple keys (prevents "too many authentication failures")
+# StrictHostKeyChecking=no allows connecting to new hosts without manual verification
+export BORG_RSH="ssh -o IdentityFile=/root/.ssh/borg-ssh.key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no"
+
 PREFIX=${BORG_PREFIX:-backup}
 DIR=${BACKUP_DIR:-/data}
 LOCK_WAIT=${BORG_LOCK_WAIT:-600}
