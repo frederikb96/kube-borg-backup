@@ -1,4 +1,4 @@
-FROM python:3.12-alpine
+FROM python:3.13-alpine
 
 # Install borgbackup, openssh-client, and Python dependencies
 RUN apk add --no-cache borgbackup openssh-client && \

@@ -18,9 +18,9 @@ import os
 import signal
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 from kubernetes import client, config as k8s_config
@@ -32,10 +32,10 @@ SNAP_VERSION = "v1"
 SNAP_PLURAL = "volumesnapshots"
 
 # Global state for SIGTERM handler
-_tracked_resources: Dict[str, List[str]] = {"clone_pvcs": [], "borg_pods": [], "ssh_secrets": []}
-_namespace: Optional[str] = None
-_core_api: Optional[client.CoreV1Api] = None
-_failures: List[str] = []
+_tracked_resources: dict[str, list[str]] = {"clone_pvcs": [], "borg_pods": [], "ssh_secrets": []}
+_namespace: str | None = None
+_core_api: client.CoreV1Api | None = None
+_failures: list[str] = []
 
 
 def log_msg(msg: str) -> None:
@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_config_path(cli_path: Optional[str]) -> Path:
+def resolve_config_path(cli_path: str | None) -> Path:
     """Resolve the config file path from CLI, env, or default."""
     if cli_path:
         return Path(cli_path)
@@ -61,7 +61,7 @@ def resolve_config_path(cli_path: Optional[str]) -> Path:
     return Path("/config/config.yaml")
 
 
-def load_config(cli_path: Optional[str]) -> Dict[str, Any]:
+def load_config(cli_path: str | None) -> dict[str, Any]:
     """Load and validate configuration from YAML file."""
     path = resolve_config_path(cli_path)
     try:
@@ -131,7 +131,7 @@ def latest_snapshot(
     snap_api: client.CustomObjectsApi,
     pvc: str,
     namespace: str
-) -> Optional[str]:
+) -> str | None:
     """Find the latest ready snapshot for a PVC.
 
     Args:
@@ -215,7 +215,7 @@ def create_borg_secret(
     borg_repo: str,
     borg_passphrase: str,
     ssh_key: str,
-    retention: Dict[str, int],
+    retention: dict[str, int],
     backup_name: str,
     backup_dir: str,
     lock_wait: int,
@@ -335,19 +335,17 @@ def wait_clone_pvc_ready(
 
         time.sleep(5)
 
-    return False
-
 
 def build_borg_pod_manifest(
     pod_name: str,
     backup_name: str,
     clone_pvc: str,
-    pod_config: Dict[str, Any],
+    pod_config: dict[str, Any],
     config_secret: str,
     cache_pvc: str,
     pvc_timeout: int,
     namespace: str
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build borg pod manifest as pure Python dict.
 
     Args:
@@ -381,7 +379,10 @@ def build_borg_pod_manifest(
             "containers": [
                 {
                     "name": "borg",
-                    "image": f"{pod_config.get('image', {}).get('repository', 'ghcr.io/frederikb96/kube-borg-backup-essentials')}:{pod_config.get('image', {}).get('tag', 'latest')}",
+                    "image": (
+                        f"{pod_config.get('image', {}).get('repository', 'ghcr.io/frederikb96/kube-borg-backup-essentials')}"  # noqa: E501
+                        f":{pod_config.get('image', {}).get('tag', 'latest')}"
+                    ),
                     "imagePullPolicy": pod_config.get("image", {}).get("pullPolicy", "IfNotPresent"),
                     "securityContext": {
                         "privileged": pod_config.get("privileged", True)
@@ -434,7 +435,7 @@ def build_borg_pod_manifest(
 
 def spawn_borg_pod(
     v1: client.CoreV1Api,
-    manifest: Dict[str, Any],
+    manifest: dict[str, Any],
     namespace: str,
     timeout: int
 ) -> bool:
@@ -525,16 +526,16 @@ def delete_secret(v1: client.CoreV1Api, name: str, namespace: str) -> None:
 
 
 def process_backup(
-    backup_config: Dict[str, Any],
+    backup_config: dict[str, Any],
     v1: client.CoreV1Api,
     snap_api: client.CustomObjectsApi,
     release_name: str,
-    pod_config: Dict[str, Any],
+    pod_config: dict[str, Any],
     borg_repo: str,
     borg_passphrase: str,
     ssh_private_key: str,
     cache_pvc: str,
-    retention: Dict[str, int],
+    retention: dict[str, int],
     namespace: str,
     test_mode: bool
 ) -> bool:
@@ -564,9 +565,19 @@ def process_backup(
     clone_bind_timeout = backup_config.get("cloneBindTimeout")
 
     if not all([name, pvc, storage_class, timeout, clone_bind_timeout]):
-        log_msg(f"❌ Backup config missing required fields (name, pvc, class, timeout, cloneBindTimeout): {backup_config}")
+        log_msg(
+            f"❌ Backup config missing required fields "
+            f"(name, pvc, class, timeout, cloneBindTimeout): {backup_config}"
+        )
         _failures.append(f"{name or 'unknown'}: Config error - missing required fields")
         return False
+
+    # Type narrowing: all fields validated as non-None above
+    assert isinstance(name, str)
+    assert isinstance(pvc, str)
+    assert isinstance(storage_class, str)
+    assert isinstance(timeout, int)
+    assert isinstance(clone_bind_timeout, int)
 
     log_msg(f"\n{'='*60}")
     log_msg(f"🔄 Starting backup: {name}")
@@ -587,11 +598,11 @@ def process_backup(
         log_msg(f"✅ Found snapshot: {snap_name}")
 
         # Step 2: Create clone PVC
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
         clone_name = f"{snap_name}-clone-{ts}"
         log_msg(f"📦 Creating clone PVC: {clone_name}")
         create_clone_pvc(v1, snap_api, snap_name, clone_name, storage_class, namespace)
-        log_msg(f"✅ Clone PVC created")
+        log_msg("✅ Clone PVC created")
 
         # Step 3: Wait for clone PVC to be ready
         log_msg(f"⏳ Waiting for clone PVC to be ready (timeout: {clone_bind_timeout}s)...")
@@ -603,9 +614,9 @@ def process_backup(
         # Step 4: Spawn borg pod (or skip in test mode)
         if test_mode:
             log_msg(f"🧪 TEST MODE: Skipping borg pod spawn for {name}")
-            log_msg(f"🧪 TEST MODE: Simulating 2 second backup...")
+            log_msg("🧪 TEST MODE: Simulating 2 second backup...")
             time.sleep(2)
-            log_msg(f"✅ TEST MODE: Backup simulation successful")
+            log_msg("✅ TEST MODE: Backup simulation successful")
             return True
 
         # Step 4a: Create ephemeral secret with config file
@@ -618,7 +629,7 @@ def process_backup(
             retention, name, "/data", timeout,
             namespace
         )
-        log_msg(f"✅ Config secret created")
+        log_msg("✅ Config secret created")
 
         # Step 4b: Build and spawn borg pod
         log_msg(f"🚀 Spawning borg pod: {pod_name}")
@@ -693,6 +704,11 @@ def main() -> None:
         log_msg("❌ Config missing required fields: borgRepo, borgPassphrase, sshPrivateKey")
         sys.exit(2)
 
+    # Type narrowing: all fields validated as non-None above
+    assert isinstance(borg_repo, str)
+    assert isinstance(borg_passphrase, str)
+    assert isinstance(ssh_private_key, str)
+
     if not backups:
         log_msg("⚠️  No backups configured")
         sys.exit(0)
@@ -705,7 +721,7 @@ def main() -> None:
 
     # Process backups sequentially (borg repo only supports one writer)
     for backup_cfg in backups:
-        success = process_backup(
+        _ = process_backup(  # Result unused, failures tracked in _failures global
             backup_cfg, v1, snap_api, release_name, pod_config,
             borg_repo, borg_passphrase, ssh_private_key, cache_pvc,
             retention, namespace, test_mode
@@ -714,7 +730,7 @@ def main() -> None:
 
     # Report results
     log_msg(f"\n{'='*60}")
-    log_msg(f"📊 Backup Process Complete")
+    log_msg("📊 Backup Process Complete")
     log_msg(f"{'='*60}")
 
     if _failures:

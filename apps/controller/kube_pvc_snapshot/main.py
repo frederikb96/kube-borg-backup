@@ -34,9 +34,9 @@ import signal
 import sys
 import time
 import concurrent.futures
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 from kubernetes import client, config as k8s_config
@@ -49,20 +49,23 @@ VERSION = "v1"
 PLURAL = "volumesnapshots"
 
 # Global state for signal handler
-_config: Optional[Dict[str, Any]] = None
-_namespace: Optional[str] = None
-_core_api: Optional[client.CoreV1Api] = None
+_config: dict[str, Any] | None = None
+_namespace: str | None = None
+_core_api: client.CoreV1Api | None = None
 
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="PVC snapshot helper")
     parser.add_argument("-c", "--config", help="Path to config file")
-    parser.add_argument("--test", action="store_true", help="Test mode: 5sec delay before snapshots, log to /tmp/snapshot-test.log")
+    parser.add_argument(
+        "--test", action="store_true",
+        help="Test mode: 5sec delay before snapshots"
+    )
     return parser.parse_args()
 
 
-def resolve_config_path(cli_path: Optional[str]) -> Path:
+def resolve_config_path(cli_path: str | None) -> Path:
     """Resolve the config file path from CLI, env, or default."""
     if cli_path:
         return Path(cli_path)
@@ -72,7 +75,7 @@ def resolve_config_path(cli_path: Optional[str]) -> Path:
     return Path("/config/config.yaml")
 
 
-def load_config(cli_path: Optional[str]) -> Dict[str, Any]:
+def load_config(cli_path: str | None) -> dict[str, Any]:
     """Load and validate configuration from YAML file."""
     path = resolve_config_path(cli_path)
     try:
@@ -105,7 +108,7 @@ def init_clients() -> tuple[client.CustomObjectsApi, client.CoreV1Api]:
 
 def run_pod_exec_hook(
     core_api: client.CoreV1Api,
-    hook: Dict[str, Any],
+    hook: dict[str, Any],
     namespace: str
 ) -> None:
     """Execute a command in a pod via Kubernetes API.
@@ -148,7 +151,7 @@ def run_pod_exec_hook(
             print(f"❌ Hook failed with exit code {resp.returncode}", file=sys.stderr)
             raise RuntimeError(f"Hook command failed: {resp.returncode}")
 
-        print(f"✅ Hook completed successfully")
+        print("✅ Hook completed successfully")
 
     except ApiException as exc:
         print(f"❌ Failed to exec in pod {pod_name}: {exc}", file=sys.stderr)
@@ -157,7 +160,7 @@ def run_pod_exec_hook(
 
 def run_hooks(
     core_api: client.CoreV1Api,
-    hooks: List[Dict[str, Any]],
+    hooks: list[dict[str, Any]],
     namespace: str,
     hook_type: str
 ) -> None:
@@ -205,7 +208,7 @@ def create_snapshot(
     Returns:
         Snapshot name
     """
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     snap_name = f"{pvc_name}-snap-{ts}"
 
     body = {
@@ -254,7 +257,7 @@ def wait_snapshot_ready(
 
 def create_snapshot_for_pvc(
     api: client.CustomObjectsApi,
-    pvc_config: Dict[str, Any],
+    pvc_config: dict[str, Any],
     namespace: str
 ) -> str:
     """Create and wait for snapshot for a single PVC."""
@@ -275,7 +278,7 @@ def create_snapshot_for_pvc(
 def prune_snapshots_tiered(
     api: client.CustomObjectsApi,
     pvc_name: str,
-    retention: Dict[str, int],
+    retention: dict[str, int],
     namespace: str
 ) -> None:
     """Prune snapshots using tiered retention policy.
@@ -304,13 +307,13 @@ def prune_snapshots_tiered(
         reverse=True
     )
 
-    now = datetime.now(timezone.utc)
-    preserve_set = set()
+    now = datetime.now(UTC)
+    preserve_set: set[str] = set()
 
     # Hourly: Keep 1 per hour for last N hours
     hourly_keep = retention.get("hourly", 0)
     if hourly_keep > 0:
-        hourly_buckets: Dict[str, str] = {}  # hour -> snapshot name
+        hourly_buckets: dict[str, str] = {}  # hour -> snapshot name
         for snap in items:
             ts_str = snap.get("metadata", {}).get("creationTimestamp")
             if not ts_str:
@@ -329,7 +332,7 @@ def prune_snapshots_tiered(
     # Daily: Keep 1 per day for last N days
     daily_keep = retention.get("daily", 0)
     if daily_keep > 0:
-        daily_buckets: Dict[str, str] = {}
+        daily_buckets: dict[str, str] = {}
         for snap in items:
             ts_str = snap.get("metadata", {}).get("creationTimestamp")
             if not ts_str:
@@ -348,7 +351,7 @@ def prune_snapshots_tiered(
     # Weekly: Keep 1 per week for last N weeks
     weekly_keep = retention.get("weekly", 0)
     if weekly_keep > 0:
-        weekly_buckets: Dict[str, str] = {}
+        weekly_buckets: dict[str, str] = {}
         for snap in items:
             ts_str = snap.get("metadata", {}).get("creationTimestamp")
             if not ts_str:
@@ -368,7 +371,7 @@ def prune_snapshots_tiered(
     # Monthly: Keep 1 per month for last N months
     monthly_keep = retention.get("monthly", 0)
     if monthly_keep > 0:
-        monthly_buckets: Dict[str, str] = {}
+        monthly_buckets: dict[str, str] = {}
         for snap in items:
             ts_str = snap.get("metadata", {}).get("creationTimestamp")
             if not ts_str:
@@ -495,7 +498,7 @@ def main() -> None:
             for future in concurrent.futures.as_completed(futures):
                 pvc_cfg = futures[future]
                 try:
-                    snap_name = future.result()
+                    _ = future.result()  # Wait for completion, result unused
                 except Exception as exc:
                     pvc_name = pvc_cfg.get("name", "unknown")
                     print(f"❌ Failed to create snapshot for {pvc_name}: {exc}", file=sys.stderr)
@@ -504,7 +507,7 @@ def main() -> None:
         # Step 3: Prune old snapshots
         if retention:
             print(f"\n{'='*60}")
-            print(f"🗑️  Pruning old snapshots")
+            print("🗑️  Pruning old snapshots")
             print(f"{'='*60}\n")
 
             for pvc_cfg in pvcs:

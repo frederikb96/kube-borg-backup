@@ -17,9 +17,8 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
-from typing import Dict, Optional
 
 import yaml
 
@@ -32,8 +31,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Global state for signal handling
-_borg_process: Optional[subprocess.Popen] = None
-_borg_repo: Optional[str] = None
+_borg_process: subprocess.Popen | None = None
+_borg_repo: str | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_config(config_path: str) -> Dict:
+def load_config(config_path: str) -> dict:
     """Load and validate configuration from YAML file.
 
     Args:
@@ -190,7 +189,7 @@ def check_repo_status(borg_repo: str, borg_passphrase: str, borg_rsh: str) -> bo
 
             # Other exit 2 error - fail
             else:
-                logger.error(f"Unexpected borg info failure (exit 2):")
+                logger.error("Unexpected borg info failure (exit 2):")
                 logger.error(output)
                 sys.exit(1)
 
@@ -265,7 +264,7 @@ def handle_shutdown(signum, frame):
     sys.exit(143)
 
 
-def run_backup(config: Dict) -> int:
+def run_backup(config: dict) -> int:
     """Run borg backup with configuration.
 
     Args:
@@ -307,7 +306,7 @@ def run_backup(config: Dict) -> int:
     check_repo_status(borg_repo, borg_passphrase, borg_rsh)
 
     # Build archive name with UTC timestamp
-    archive_name = f"{prefix}-{datetime.now(timezone.utc).strftime('%Y-%m-%d-%H-%M-%S')}"
+    archive_name = f"{prefix}-{datetime.now(UTC).strftime('%Y-%m-%d-%H-%M-%S')}"
     archive = f"{borg_repo}::{archive_name}"
 
     logger.info(f"Creating archive: {archive_name}")
