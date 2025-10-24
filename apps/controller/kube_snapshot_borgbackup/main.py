@@ -79,17 +79,6 @@ def load_config(cli_path: Optional[str]) -> Dict[str, Any]:
     return data
 
 
-def get_namespace() -> str:
-    """Get current namespace from env, service account, or default."""
-    env_namespace = os.getenv("NAMESPACE")
-    if env_namespace:
-        return env_namespace
-    sa_namespace_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
-    if sa_namespace_path.exists():
-        return sa_namespace_path.read_text().strip()
-    return "default"
-
-
 def init_clients() -> tuple[client.CoreV1Api, client.CustomObjectsApi]:
     """Initialize Kubernetes API clients."""
     try:
@@ -465,6 +454,7 @@ def process_backup(
     backup_config: Dict[str, Any],
     v1: client.CoreV1Api,
     snap_api: client.CustomObjectsApi,
+    release_name: str,
     pod_config: Dict[str, Any],
     repo_secret: str,
     ssh_secret: str,
@@ -479,6 +469,7 @@ def process_backup(
         backup_config: Backup configuration (name, pvc, class, timeout)
         v1: CoreV1Api client
         snap_api: CustomObjectsApi client
+        release_name: Helm release fullname for pod naming
         pod_config: Pod configuration
         repo_secret: Borg repo secret name
         ssh_secret: SSH secret name
@@ -540,7 +531,7 @@ def process_backup(
             log_msg(f"✅ TEST MODE: Backup simulation successful")
             return True
 
-        pod_name = f"borg-{name}-{ts}"
+        pod_name = f"{release_name}-borg-{name}-{ts}"
         log_msg(f"🚀 Spawning borg pod: {pod_name}")
         manifest = build_borg_pod_manifest(
             pod_name, name, clone_name, pod_config,
@@ -581,7 +572,10 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
 
-    namespace = get_namespace()
+    namespace = cfg.get("namespace")
+    if not namespace:
+        log_msg("❌ Config missing required field: namespace")
+        sys.exit(2)
     _namespace = namespace
 
     test_mode = args.test
@@ -594,6 +588,7 @@ def main() -> None:
         log_msg("🧪 TEST MODE: Borg pods will NOT be spawned")
 
     # Extract configuration
+    release_name = cfg.get("releaseName", "kube-borg-backup")
     backups = cfg.get("backups", [])
     pod_config = cfg.get("pod", {})
     repo_secret = cfg.get("repoSecret", "borg-secrets")
@@ -608,12 +603,13 @@ def main() -> None:
     log_msg(f"\n{'='*60}")
     log_msg(f"🎯 Processing {len(backups)} backup(s) SEQUENTIALLY")
     log_msg(f"{'='*60}")
+    log_msg(f"📋 Release: {release_name}")
     log_msg(f"📋 Retention: {retention}")
 
     # Process backups sequentially (borg repo only supports one writer)
     for backup_cfg in backups:
         success = process_backup(
-            backup_cfg, v1, snap_api, pod_config,
+            backup_cfg, v1, snap_api, release_name, pod_config,
             repo_secret, ssh_secret, cache_pvc,
             retention, namespace, test_mode
         )

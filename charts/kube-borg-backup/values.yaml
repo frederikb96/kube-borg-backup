@@ -24,11 +24,6 @@ serviceAccount:
 ## - Post-hooks also run on pod termination (SIGTERM) for safety.
 ##
 snapshot:
-  # CronJob name
-  name: snapshot
-  # Container name in the CronJob
-  containerName: snapshot
-
   # Container image configuration
   image:
     repository: ghcr.io/frederikb96/kube-borg-backup-controller
@@ -97,11 +92,6 @@ snapshot:
 ## Backs up VolumeSnapshots to BorgBackup repository.
 ##
 borgbackup:
-  # CronJob name
-  name: borgbackup
-  # Container name in the CronJob
-  containerName: backup
-
   # Container image configuration
   image:
     repository: ghcr.io/frederikb96/kube-borg-backup-controller
@@ -129,7 +119,6 @@ borgbackup:
 
   # Borg pod configuration (spawned by backup controller)
   pod:
-    name: borg
     image: ghcr.io/frederikb96/kube-borg-backup-essentials:latest
     resources:
       requests:

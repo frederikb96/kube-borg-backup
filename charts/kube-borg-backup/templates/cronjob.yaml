@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ .Values.snapshot.name | default (include "kube-borg-backup.fullname" .) }}
+  name: {{ include "kube-borg-backup.fullname" . }}-snapshot
   namespace: {{ .Values.namespace.name }}
   labels:
     {{- include "kube-borg-backup.labels" . | nindent 4 }}
@@ -20,7 +20,7 @@ spec:
           serviceAccountName: {{ .Values.serviceAccount.name }}
           restartPolicy: Never
           containers:
-            - name: {{ .Values.snapshot.containerName }}
+            - name: snapshot
               image: "{{ .Values.snapshot.image.repository }}:{{ .Values.snapshot.image.tag }}"
               imagePullPolicy: {{ .Values.snapshot.image.pullPolicy }}
               command: ["python", "-m", "kube_pvc_snapshot.main"]

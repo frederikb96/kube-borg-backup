@@ -90,20 +90,6 @@ def load_config(cli_path: Optional[str]) -> Dict[str, Any]:
     return data
 
 
-def get_namespace() -> str:
-    """Get current namespace from env, service account, or default."""
-    # Try environment variable first (for testing)
-    env_namespace = os.getenv("NAMESPACE")
-    if env_namespace:
-        return env_namespace
-    # Try to read from service account (in-cluster)
-    sa_namespace_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
-    if sa_namespace_path.exists():
-        return sa_namespace_path.read_text().strip()
-    # Fallback to default
-    return "default"
-
-
 def init_clients() -> tuple[client.CustomObjectsApi, client.CoreV1Api]:
     """Initialize Kubernetes API clients."""
     try:
@@ -450,7 +436,10 @@ def main() -> None:
     cfg = load_config(args.config)
     _config = cfg
 
-    namespace = get_namespace()
+    namespace = cfg.get("namespace")
+    if not namespace:
+        log_msg("❌ Config missing required field: namespace")
+        sys.exit(2)
     _namespace = namespace
 
     test_mode = args.test
