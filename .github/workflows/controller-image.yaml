@@ -45,3 +45,4 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/kube-borg-backup-controller:latest
             ghcr.io/${{ github.repository_owner }}/kube-borg-backup-controller:${{ steps.ver.outputs.version }}
+
