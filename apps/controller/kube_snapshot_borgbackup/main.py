@@ -194,7 +194,7 @@ def create_clone_pvc(
             }
         },
         "spec": {
-            "accessModes": ["ReadWriteOnce"],
+            "accessModes": ["ReadWriteOncePod"],
             "storageClassName": storage_class,
             "resources": {"requests": {"storage": size}},
             "dataSource": {
@@ -408,7 +408,8 @@ def build_borg_pod_manifest(
             "containers": [
                 {
                     "name": "borg",
-                    "image": pod_config.get("image", "ghcr.io/frederikb96/kube-borg-backup-essentials:latest"),
+                    "image": f"{pod_config.get('image', {}).get('repository', 'ghcr.io/frederikb96/kube-borg-backup-essentials')}:{pod_config.get('image', {}).get('tag', 'latest')}",
+                    "imagePullPolicy": pod_config.get("image", {}).get("pullPolicy", "IfNotPresent"),
                     "securityContext": {
                         "privileged": pod_config.get("privileged", True)
                     },

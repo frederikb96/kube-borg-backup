@@ -28,7 +28,7 @@ snapshot:
   image:
     repository: ghcr.io/frederikb96/kube-borg-backup-controller
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
 
   # CronJob schedule configuration
   cron:
@@ -96,7 +96,7 @@ borgbackup:
   image:
     repository: ghcr.io/frederikb96/kube-borg-backup-controller
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
 
   # CronJob schedule configuration
   cron:
@@ -119,7 +119,10 @@ borgbackup:
 
   # Borg pod configuration (spawned by backup controller)
   pod:
-    image: ghcr.io/frederikb96/kube-borg-backup-essentials:latest
+    image:
+      repository: ghcr.io/frederikb96/kube-borg-backup-essentials
+      tag: latest
+      pullPolicy: Always
     # Privileged mode is enabled by default for maximum PVC compatibility
     # Bypasses filesystem permission checks, works with any PVC ownership (PostgreSQL, MySQL, etc.)
     # Uncomment to disable if cluster security policies restrict privileged containers:
