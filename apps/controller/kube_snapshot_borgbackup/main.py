@@ -99,10 +99,10 @@ def cleanup_all_resources() -> None:
 
     log_msg("\n\n🛑 Received SIGTERM - cleaning up all tracked resources...")
 
-    # Clean up SSH secrets
+    # Clean up credentials secrets
     for secret_name in _tracked_resources["ssh_secrets"]:
         try:
-            log_msg(f"🗑️  Deleting SSH secret: {secret_name}")
+            log_msg(f"🗑️  Deleting credentials secret: {secret_name}")
             _core_api.delete_namespaced_secret(secret_name, _namespace)
         except ApiException as exc:
             log_msg(f"⚠️  Failed to delete secret {secret_name}: {exc}")
@@ -209,17 +209,21 @@ def create_clone_pvc(
     _tracked_resources["clone_pvcs"].append(clone_name)
 
 
-def create_ssh_secret(
+def create_borg_secret(
     v1: client.CoreV1Api,
     secret_name: str,
+    borg_repo: str,
+    borg_passphrase: str,
     ssh_key: str,
     namespace: str
 ) -> None:
-    """Create ephemeral SSH secret for borg pod.
+    """Create ephemeral secret with all borg credentials.
 
     Args:
         v1: CoreV1Api client
         secret_name: Name for the secret
+        borg_repo: Borg repository URL
+        borg_passphrase: Borg passphrase
         ssh_key: SSH private key content
         namespace: Kubernetes namespace
 
@@ -237,7 +241,11 @@ def create_ssh_secret(
             }
         ),
         type="Opaque",
-        string_data={"borg-ssh.key": ssh_key}
+        string_data={
+            "BORG_REPO": borg_repo,
+            "BORG_PASSPHRASE": borg_passphrase,
+            "SSH_PRIVATE_KEY": ssh_key
+        }
     )
 
     v1.create_namespaced_secret(namespace, body)
@@ -310,9 +318,7 @@ def build_borg_pod_manifest(
     backup_name: str,
     clone_pvc: str,
     pod_config: Dict[str, Any],
-    borg_repo: str,
-    borg_passphrase: str,
-    ssh_secret: str,
+    creds_secret: str,
     cache_pvc: str,
     retention: Dict[str, int],
     pvc_timeout: int,
@@ -325,9 +331,7 @@ def build_borg_pod_manifest(
         backup_name: Backup identifier (archive prefix)
         clone_pvc: Name of clone PVC to mount
         pod_config: Pod configuration (image, resources)
-        borg_repo: Borg repository URL
-        borg_passphrase: Borg passphrase
-        ssh_secret: Name of ephemeral SSH secret
+        creds_secret: Name of ephemeral secret containing all borg credentials
         cache_pvc: Name of borg cache PVC
         retention: Retention policy (hourly, daily, weekly, monthly, yearly)
         pvc_timeout: Per-PVC timeout (pod activeDeadlineSeconds and lock-wait)
@@ -355,10 +359,35 @@ def build_borg_pod_manifest(
     if retention.get("yearly"):
         env_vars.append({"name": "BORG_KEEP_YEARLY", "value": str(retention["yearly"])})
 
-    # Add borg credentials directly (SSH config handled in run.sh)
+    # Add borg credentials from secret
     env_vars.extend([
-        {"name": "BORG_REPO", "value": borg_repo},
-        {"name": "BORG_PASSPHRASE", "value": borg_passphrase}
+        {
+            "name": "BORG_REPO",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": creds_secret,
+                    "key": "BORG_REPO"
+                }
+            }
+        },
+        {
+            "name": "BORG_PASSPHRASE",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": creds_secret,
+                    "key": "BORG_PASSPHRASE"
+                }
+            }
+        },
+        {
+            "name": "SSH_PRIVATE_KEY",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": creds_secret,
+                    "key": "SSH_PRIVATE_KEY"
+                }
+            }
+        }
     ])
 
     manifest = {
@@ -393,11 +422,6 @@ def build_borg_pod_manifest(
                         {
                             "name": "cache",
                             "mountPath": "/cache"
-                        },
-                        {
-                            "name": "ssh",
-                            "mountPath": "/root/.ssh",
-                            "readOnly": True
                         }
                     ],
                     "resources": pod_config.get("resources", {})
@@ -415,13 +439,6 @@ def build_borg_pod_manifest(
                     "name": "cache",
                     "persistentVolumeClaim": {
                         "claimName": cache_pvc
-                    }
-                },
-                {
-                    "name": "ssh",
-                    "secret": {
-                        "secretName": ssh_secret,
-                        "defaultMode": 0o400
                     }
                 }
             ]
@@ -607,18 +624,18 @@ def process_backup(
             log_msg(f"✅ TEST MODE: Backup simulation successful")
             return True
 
-        # Step 4a: Create ephemeral SSH secret
+        # Step 4a: Create ephemeral secret with all borg credentials
         pod_name = f"{release_name}-borg-{name}-{ts}"
-        ssh_secret_name = f"{pod_name}-ssh"
-        log_msg(f"🔐 Creating ephemeral SSH secret: {ssh_secret_name}")
-        create_ssh_secret(v1, ssh_secret_name, ssh_private_key, namespace)
-        log_msg(f"✅ SSH secret created")
+        ssh_secret_name = f"{pod_name}-creds"
+        log_msg(f"🔐 Creating ephemeral credentials secret: {ssh_secret_name}")
+        create_borg_secret(v1, ssh_secret_name, borg_repo, borg_passphrase, ssh_private_key, namespace)
+        log_msg(f"✅ Credentials secret created")
 
         # Step 4b: Build and spawn borg pod
         log_msg(f"🚀 Spawning borg pod: {pod_name}")
         manifest = build_borg_pod_manifest(
             pod_name, name, clone_name, pod_config,
-            borg_repo, borg_passphrase, ssh_secret_name, cache_pvc,
+            ssh_secret_name, cache_pvc,
             retention, timeout, namespace
         )
 
@@ -638,7 +655,7 @@ def process_backup(
     finally:
         # Always cleanup
         if ssh_secret_name:
-            log_msg(f"🗑️  Cleaning up SSH secret: {ssh_secret_name}")
+            log_msg(f"🗑️  Cleaning up credentials secret: {ssh_secret_name}")
             delete_secret(v1, ssh_secret_name, namespace)
         if pod_name:
             log_msg(f"🗑️  Cleaning up borg pod: {pod_name}")
