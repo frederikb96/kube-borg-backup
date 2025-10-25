@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.1] - 2025-10-25
+
+### Fixed
+
+- **Critical Multi-App Template Bug** (Helm Chart v5.0.1)
+  - Fixed missing newline before YAML document separator (`---`) in template files
+  - Affected: `borgbackup-config-secret.yaml` and `snapshot-config-secret.yaml`
+  - Bug caused YAML parsing errors when deploying multiple apps
+  - Error: `yaml: unmarshal errors: line X: mapping key "apiVersion" already defined`
+  - Solution: Added explicit newline (`{{ "" }}`) before closing `{{- end }}` tag
+  - Impact: Multi-app deployments now work correctly without duplicate key errors
+
 ## [5.0.0] - 2025-10-25
 
 ### BREAKING CHANGES
