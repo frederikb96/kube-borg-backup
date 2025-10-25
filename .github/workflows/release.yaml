@@ -2,9 +2,11 @@ name: Release Helm Charts
 
 on:
   push:
-    branches: [ "main" ]
-    paths:
-      - "charts/**"
+    tags:
+      - 'v*.*.*'        # Stable releases (v3.0.0)
+      - 'v*.*.*-rc*'    # Release candidates (v3.0.0-rc1)
+      - 'v*.*.*-beta*'  # Beta releases (v3.0.0-beta1)
+      - 'v*.*.*-alpha*' # Alpha releases (v3.0.0-alpha1)
 
 jobs:
   release:
@@ -26,5 +28,5 @@ jobs:
           charts_dir: charts
         env:
           CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CR_RELEASE_NAME_TEMPLATE: "helm-chart-{{ .Name }}-{{ .Version }}"
+          CR_RELEASE_NAME_TEMPLATE: "v{{ .Version }}"
           CR_GENERATE_RELEASE_NOTES: true

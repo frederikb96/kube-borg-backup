@@ -2,11 +2,11 @@ name: Container - Controller
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - "apps/controller/**"
-      - ".github/workflows/controller-image.yaml"
+    tags:
+      - 'v*.*.*'        # Stable releases (v3.0.0)
+      - 'v*.*.*-rc*'    # Release candidates (v3.0.0-rc1)
+      - 'v*.*.*-beta*'  # Beta releases (v3.0.0-beta1)
+      - 'v*.*.*-alpha*' # Alpha releases (v3.0.0-alpha1)
 
 permissions:
   contents: write
@@ -18,10 +18,19 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Read project version
+      - name: Extract version from tag
         id: ver
         run: |
-          echo "version=$(cat apps/controller/VERSION)" >> "$GITHUB_OUTPUT"
+          # Extract version from tag (remove 'v' prefix)
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Detect if pre-release (contains -, like 3.0.0-rc1)
+          if [[ "$VERSION" == *"-"* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
@@ -43,6 +52,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/kube-borg-backup/controller:latest
             ghcr.io/${{ github.repository_owner }}/kube-borg-backup/controller:${{ steps.ver.outputs.version }}
+            ${{ steps.ver.outputs.is_prerelease == 'false' && format('ghcr.io/{0}/kube-borg-backup/controller:latest', github.repository_owner) || '' }}
 

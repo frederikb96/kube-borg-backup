@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2025-10-25
+
+**MAJOR RELEASE** - Package renaming and release workflow improvements.
+
+### Breaking Changes
+
+- **GHCR Package Naming**
+  - Renamed from flat naming to hierarchical structure:
+    - `ghcr.io/frederikb96/kube-borg-backup-controller` → `ghcr.io/frederikb96/kube-borg-backup/controller`
+    - `ghcr.io/frederikb96/kube-borg-backup-essentials` → `ghcr.io/frederikb96/kube-borg-backup/backup-runner`
+  - Better organization and follows GHCR best practices
+  - Old packages deprecated, all users must update Helm values
+
+- **Component Renaming**
+  - Renamed "essentials" to "backup-runner" throughout:
+    - Container name: `essentials` → `backup-runner`
+    - Image repository field: `essentials` → `backup-runner`
+    - Directory: `apps/essentials/` → `apps/backup-runner/`
+    - Workflow: `essentials-image.yaml` → `backup-runner-image.yaml`
+  - More descriptive and clarifies purpose
+
+- **Release Workflow Changes**
+  - All releases now triggered by Git tags instead of push to main
+  - Tag format: `v*.*.*` (e.g., `v3.0.0`)
+  - Pre-release tags supported: `v*.*.*-rc*`, `v*.*.*-beta*`, `v*.*.*-alpha*`
+  - Images only tagged with `:latest` on stable releases (not pre-releases)
+  - Provides atomic releases of all 3 artifacts (controller + backup-runner + Helm chart)
+
+### Changed
+
+- **Image Tags**
+  - Controller image: `ghcr.io/frederikb96/kube-borg-backup/controller:3.0.0`
+  - Backup-runner image: `ghcr.io/frederikb96/kube-borg-backup/backup-runner:3.0.0`
+  - Helm chart version: `3.0.0`
+
+- **Default Values**
+  - Updated `values.yaml` and `example/values.yaml` with new image repositories
+  - Updated fallback image names in controller code
+  - Updated all documentation references
+
+### Migration Guide
+
+**Helm Values Update Required:**
+```yaml
+# OLD (v2.0.0)
+borgbackup:
+  pod:
+    image:
+      repository: ghcr.io/frederikb96/kube-borg-backup-essentials
+
+# NEW (v3.0.0)
+borgbackup:
+  pod:
+    image:
+      repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
+```
+
+**For GitOps Users (Flux, ArgoCD):**
+- Update HelmRelease values with new image repository
+- Old image tags will continue to exist but won't receive updates
+- Pull the v3.0.0 images after upgrading
+
 ## [2.0.0] - 2025-10-24
 
 **MAJOR RELEASE** - Complete rewrite with breaking changes. Not backwards compatible with 1.x.
