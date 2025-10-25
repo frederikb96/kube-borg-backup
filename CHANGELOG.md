@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0] - 2025-10-25
+
+### BREAKING CHANGES
+
+**This release completely refactors resource naming to follow Helm best practices. All resources now include the release name as a prefix, enabling multiple releases (dev/staging/prod) in the same cluster.**
+
+**Migration Required:**
+- All resource names will change on upgrade
+- Existing deployments will see resources recreated
+- Plan for brief downtime during upgrade
+- Review resource names before upgrading
+
+**Old naming (v4.x):**
+```
+ServiceAccount: kbb
+ClusterRole: kbb-clusterrole
+CronJob: kbb-test-snapshot
+```
+
+**New naming (v5.0.0):**
+```
+ServiceAccount: {release-name}-sa
+ClusterRole: {release-name}-clusterrole
+CronJob: {release-name}-{app}-snapshot
+```
+
+**Example with release name `kbb-dev`:**
+```
+ServiceAccount: kbb-dev-sa
+ClusterRole: kbb-dev-clusterrole
+CronJob: kbb-dev-test-snapshot
+Secret: kbb-dev-test-borg-config
+```
+
+### Added
+
+- **Modern Helm Naming Pattern** (Helm Chart v5.0.0)
+  - New `rbacName` helper: `{release-name}-{resource}` for RBAC resources
+  - New `appResourceName` helper: `{release-name}-{app}-{resource}` for app resources
+  - New `appBaseName` helper: `{release-name}-{app}` for Python controller config
+  - All resources now include release name prefix (except user-specified cache PVC)
+  - Enables multiple releases in same cluster (e.g., kbb-dev, kbb-prod, kbb-staging)
+
+### Changed
+
+- **All RBAC Resources** (Helm Chart v5.0.0)
+  - ClusterRole: `kbb-clusterrole` → `{release-name}-clusterrole`
+  - ClusterRoleBinding: `kbb-{namespace}-clusterrolebinding` → `{release-name}-clusterrolebinding-{namespace}`
+  - ServiceAccount: `kbb` → `{release-name}-sa`
+  - Role: `kbb-role` → `{release-name}-role`
+  - RoleBinding: `kbb-rolebinding` → `{release-name}-rolebinding`
+
+- **All App Resources** (Helm Chart v5.0.0)
+  - CronJobs: `kbb-{app}-{type}` → `{release-name}-{app}-{type}`
+  - Secrets: `kbb-{app}-{type}-config` → `{release-name}-{app}-{type}-config`
+  - Example: `kbb-immich-snapshot` → `kbb-dev-immich-snapshot`
+
+- **Python Controller Config** (Helm Chart v5.0.0)
+  - `releaseName` field now uses `appBaseName` helper
+  - Old: `releaseName: kbb-test-borg` (had resource type suffix)
+  - New: `releaseName: kbb-dev-test` (no resource type suffix)
+  - Python controller adds resource type when creating pods/secrets
+
+### Fixed
+
+- **Double-Borg Naming Issue** (Helm Chart v5.0.0)
+  - Pod names had duplicate "borg": `kbb-test-borg-borg-postgres-data-{ts}`
+  - Fixed by using `appBaseName` helper instead of `appResourceName`
+  - New pod names: `kbb-dev-test-borg-postgres-data-{ts}` ✅
+
+- **Multi-Release Support** (Helm Chart v5.0.0)
+  - Fixed ClusterRole naming conflict preventing multiple releases
+  - Can now deploy kbb-dev and kbb-prod in same cluster
+  - Each release has its own isolated set of cluster-scoped resources
+
+### Notes
+
+- **Cache PVC:** Remains user-specified (NO release name prefix)
+- **Python Controller:** No code changes - automatically follows new naming from config
+- **Backward Compatibility:** NONE - this is a breaking change, plan upgrade carefully
+
 ## [4.2.0] - 2025-10-25
 
 ### Added

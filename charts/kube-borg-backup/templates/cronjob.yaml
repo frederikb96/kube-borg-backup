@@ -5,7 +5,7 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "kube-borg-backup.resourceName" (dict "appName" .name "resource" "snapshot") }}
+  name: {{ include "kube-borg-backup.appResourceName" (dict "root" $ "appName" .name "resource" "snapshot") }}
   namespace: {{ .namespace }}
   labels:
     {{- include "kube-borg-backup.labels" $ | nindent 4 }}
@@ -36,5 +36,5 @@ spec:
           volumes:
             - name: config
               secret:
-                secretName: {{ include "kube-borg-backup.resourceName" (dict "appName" .name "resource" "snapshot-config") }}
+                secretName: {{ include "kube-borg-backup.appResourceName" (dict "root" $ "appName" .name "resource" "snapshot-config") }}
 {{- end }}

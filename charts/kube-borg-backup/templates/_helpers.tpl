@@ -51,18 +51,35 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
-Service account name (hardcoded)
+RBAC resource name: {release-name}-{resource-type}
+Usage: {{ include "kube-borg-backup.rbacName" (dict "root" $ "resource" "sa") }}
 */}}
-{{- define "kube-borg-backup.serviceAccountName" -}}
-kbb
+{{- define "kube-borg-backup.rbacName" -}}
+{{- printf "%s-%s" .root.Release.Name .resource | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
-Generate resource name with kbb prefix and app name
-Usage: {{ include "kube-borg-backup.resourceName" (dict "appName" .name "resource" "snapshot-cronjob") }}
+App resource name: {release-name}-{app-name}-{resource-type}
+Usage: {{ include "kube-borg-backup.appResourceName" (dict "root" $ "appName" .name "resource" "snapshot") }}
 */}}
-{{- define "kube-borg-backup.resourceName" -}}
-{{- printf "kbb-%s-%s" .appName .resource | trunc 63 | trimSuffix "-" -}}
+{{- define "kube-borg-backup.appResourceName" -}}
+{{- printf "%s-%s-%s" .root.Release.Name .appName .resource | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+App base name: {release-name}-{app-name}
+For configs where Python controller adds resource type
+Usage: {{ include "kube-borg-backup.appBaseName" (dict "root" $ "appName" .name) }}
+*/}}
+{{- define "kube-borg-backup.appBaseName" -}}
+{{- printf "%s-%s" .root.Release.Name .appName | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Service account name (calls rbacName helper)
+*/}}
+{{- define "kube-borg-backup.serviceAccountName" -}}
+{{- include "kube-borg-backup.rbacName" (dict "root" . "resource" "sa") -}}
 {{- end -}}
 
 {{/*

@@ -8,7 +8,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "kube-borg-backup.serviceAccountName" . }}-clusterrole
+  name: {{ include "kube-borg-backup.rbacName" (dict "root" . "resource" "clusterrole") }}
   labels:
     {{- include "kube-borg-backup.labels" . | nindent 4 }}
 rules:
@@ -30,12 +30,12 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "kube-borg-backup.serviceAccountName" $ }}-{{ $namespace }}-clusterrolebinding
+  name: {{ include "kube-borg-backup.rbacName" (dict "root" $ "resource" "clusterrolebinding") }}-{{ $namespace }}
   labels:
     {{- include "kube-borg-backup.labels" $ | nindent 4 }}
 roleRef:
   kind: ClusterRole
-  name: {{ include "kube-borg-backup.serviceAccountName" $ }}-clusterrole
+  name: {{ include "kube-borg-backup.rbacName" (dict "root" $ "resource" "clusterrole") }}
   apiGroup: rbac.authorization.k8s.io
 subjects:
   - kind: ServiceAccount
@@ -45,7 +45,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ include "kube-borg-backup.serviceAccountName" $ }}-role
+  name: {{ include "kube-borg-backup.rbacName" (dict "root" $ "resource" "role") }}
   namespace: {{ $namespace }}
   labels:
     {{- include "kube-borg-backup.labels" $ | nindent 4 }}
@@ -69,13 +69,13 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "kube-borg-backup.serviceAccountName" $ }}-rolebinding
+  name: {{ include "kube-borg-backup.rbacName" (dict "root" $ "resource" "rolebinding") }}
   namespace: {{ $namespace }}
   labels:
     {{- include "kube-borg-backup.labels" $ | nindent 4 }}
 roleRef:
   kind: Role
-  name: {{ include "kube-borg-backup.serviceAccountName" $ }}-role
+  name: {{ include "kube-borg-backup.rbacName" (dict "root" $ "resource" "role") }}
   apiGroup: rbac.authorization.k8s.io
 subjects:
   - kind: ServiceAccount
