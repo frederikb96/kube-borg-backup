@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.2] - 2025-10-25
+
+### Fixed
+
+- **Complete Multi-App Template Fix** (Helm Chart v5.0.2)
+  - Fixed ALL remaining template files with missing newline before YAML separators
+  - v5.0.1 only fixed 2 files; v5.0.2 fixes ALL 7 template files
+  - Affected files:
+    - `borg-cache-pvc.yaml` - Cache PVC creation
+    - `borg-cronjob.yaml` - Borgbackup CronJob
+    - `cronjob.yaml` - Snapshot CronJob
+    - `namespace.yaml` - Namespace creation
+    - `rbac.yaml` - RBAC resources
+    - (plus previously fixed: `borgbackup-config-secret.yaml`, `snapshot-config-secret.yaml`)
+  - All multi-app deployments now work correctly
+
 ## [5.0.1] - 2025-10-25
 
 ### Fixed

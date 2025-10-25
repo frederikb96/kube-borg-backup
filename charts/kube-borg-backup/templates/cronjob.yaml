@@ -37,4 +37,5 @@ spec:
             - name: config
               secret:
                 secretName: {{ include "kube-borg-backup.appResourceName" (dict "root" $ "appName" .name "resource" "snapshot-config") }}
+{{ "" }}
 {{- end }}

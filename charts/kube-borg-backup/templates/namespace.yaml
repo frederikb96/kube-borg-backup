@@ -10,4 +10,5 @@ metadata:
     {{- include "kube-borg-backup.labels" $ | nindent 4 }}
     app.kubernetes.io/component: {{ .name }}
 {{- end }}
+{{ "" }}
 {{- end }}

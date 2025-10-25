@@ -81,4 +81,5 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "kube-borg-backup.serviceAccountName" $ }}
     namespace: {{ $namespace }}
+{{ "" }}
 {{- end }}
