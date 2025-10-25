@@ -1,28 +1,33 @@
+{{- range .Values.apps }}
+{{- $_ := include "kube-borg-backup.validateAppName" .name -}}
+{{- $borgConfig := fromJson (include "kube-borg-backup.mergeBorgConfig" (dict "root" $ "app" .)) -}}
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "kube-borg-backup.fullname" . }}-borgbackup
-  namespace: {{ .Values.namespace.name }}
+  name: {{ include "kube-borg-backup.resourceName" (dict "appName" .name "resource" "borgbackup") }}
+  namespace: {{ .namespace }}
   labels:
-    {{- include "kube-borg-backup.labels" . | nindent 4 }}
+    {{- include "kube-borg-backup.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ .name }}
 spec:
-  schedule: {{ .Values.borgbackup.cron.schedule | quote }}
+  schedule: {{ $borgConfig.cron.schedule | quote }}
   concurrencyPolicy: Forbid
-  startingDeadlineSeconds: {{ .Values.borgbackup.cron.startingDeadlineSeconds }}
-  successfulJobsHistoryLimit: {{ .Values.borgbackup.cron.successfulJobsHistoryLimit }}
-  failedJobsHistoryLimit: {{ .Values.borgbackup.cron.failedJobsHistoryLimit }}
+  startingDeadlineSeconds: {{ $borgConfig.cron.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $borgConfig.cron.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $borgConfig.cron.failedJobsHistoryLimit }}
   jobTemplate:
     spec:
-      activeDeadlineSeconds: {{ .Values.borgbackup.timeout }}
+      activeDeadlineSeconds: {{ $borgConfig.timeout }}
       backoffLimit: 0
       template:
         spec:
-          serviceAccountName: {{ .Values.serviceAccount.name }}
+          serviceAccountName: {{ $.Values.serviceAccount.name }}
           restartPolicy: Never
           containers:
             - name: borgbackup
-              image: "{{ .Values.borgbackup.image.repository }}:{{ .Values.borgbackup.image.tag }}"
-              imagePullPolicy: {{ .Values.borgbackup.image.pullPolicy }}
+              image: "{{ $borgConfig.image.repository }}:{{ $borgConfig.image.tag }}"
+              imagePullPolicy: {{ $borgConfig.image.pullPolicy }}
               command: ["python", "-m", "kube_snapshot_borgbackup.main"]
               volumeMounts:
                 - name: config
@@ -31,4 +36,5 @@ spec:
           volumes:
             - name: config
               secret:
-                secretName: {{ include "kube-borg-backup.borgConfigSecret" . }}
+                secretName: {{ include "kube-borg-backup.resourceName" (dict "appName" .name "resource" "borg-config") }}
+{{- end }}

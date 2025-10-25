@@ -1,14 +1,23 @@
-{{- if .Values.borgbackup.cache.create }}
+{{- range .Values.apps }}
+{{- $_ := include "kube-borg-backup.validateAppName" .name -}}
+{{- $borgConfig := fromJson (include "kube-borg-backup.mergeBorgConfig" (dict "root" $ "app" .)) -}}
+{{- $_ := include "kube-borg-backup.validateBorgConfig" (dict "appName" .name "config" $borgConfig) -}}
+{{- if $borgConfig.cache.create }}
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ .Values.borgbackup.cache.pvcName }}
-  namespace: {{ .Values.namespace.name }}
+  name: {{ $borgConfig.cache.pvcName }}
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "kube-borg-backup.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ .name }}
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: {{ .Values.borgbackup.cache.storageClassName }}
+  storageClassName: {{ $borgConfig.cache.storageClassName }}
   resources:
     requests:
-      storage: {{ .Values.borgbackup.cache.size }}
+      storage: {{ $borgConfig.cache.size }}
+{{- end }}
 {{- end }}

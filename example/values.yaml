@@ -8,17 +8,27 @@
 ## - Proper timeouts for large datasets
 ##
 
-## Namespace configuration
-namespace:
-  create: false
-  name: immich
-
 ## ServiceAccount for RBAC permissions
 serviceAccount:
-  name: immich-backup
+  name: kbb
 
 ## =============================================================================
-## Snapshot Configuration
+## Borg Repository Definitions
+## =============================================================================
+borgRepos:
+  - name: borgbase-immich
+    repo: "ssh://user@user.repo.borgbase.com/./repo"
+    passphrase: "your-secure-borg-passphrase-here"
+    privateKey: |
+      -----BEGIN OPENSSH PRIVATE KEY-----
+      YOUR_SSH_PRIVATE_KEY_HERE
+      Replace this with your actual BorgBase SSH private key
+      Generate with: ssh-keygen -t ed25519 -C "immich-backup"
+      Add public key to BorgBase repository settings
+      -----END OPENSSH PRIVATE KEY-----
+
+## =============================================================================
+## Snapshot Defaults
 ## =============================================================================
 snapshot:
   image:
@@ -27,70 +37,21 @@ snapshot:
     pullPolicy: IfNotPresent
 
   cron:
-    # Run every hour for frequent snapshots
     schedule: "0 * * * *"
     startingDeadlineSeconds: 60
     successfulJobsHistoryLimit: 1
     failedJobsHistoryLimit: 1
 
-  # CronJob timeout - should account for pre-hooks + snapshots + post-hooks
-  timeout: 600  # 10 minutes
+  timeout: 600
 
-  # Tiered retention: Keep hourly, daily, weekly, monthly snapshots
   retention:
-    hourly: 24    # Last 24 hours
-    daily: 7      # Last 7 days
-    weekly: 4     # Last 4 weeks
-    monthly: 3    # Last 3 months
-
-  # PVCs to snapshot
-  pvcs:
-    # PostgreSQL database with consistency hooks
-    # IMPORTANT: Hooks ensure database is in consistent state for backup
-    - name: immich-db-pvc
-      snapshotClass: longhorn
-      hooks:
-        pre:
-          # Put PostgreSQL into backup mode before snapshot
-          # Handles both PG <15 (pg_start_backup) and PG >=15 (pg_backup_start)
-          - pod: immich-postgres-0
-            container: postgres
-            command:
-              - /bin/bash
-              - -c
-              - |
-                VERSION_NUM=$(psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;")
-                if [ "$VERSION_NUM" -ge 150000 ]; then
-                  psql -U "$DB_USERNAME" -c "SELECT pg_backup_start(label => 'immich_snap', fast => true);"
-                else
-                  psql -U "$DB_USERNAME" -c "SELECT pg_start_backup('immich_snap', true);"
-                fi
-        post:
-          # Exit backup mode after snapshot
-          # ALWAYS runs, even if snapshot fails (SIGTERM handler ensures this)
-          - pod: immich-postgres-0
-            container: postgres
-            command:
-              - /bin/bash
-              - -c
-              - |
-                VERSION_NUM=$(psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;")
-                if [ "$VERSION_NUM" -ge 150000 ]; then
-                  psql -U "$DB_USERNAME" -c "SELECT pg_backup_stop(wait_for_archive => true);" || echo "No backup in progress"
-                else
-                  psql -U "$DB_USERNAME" -c "SELECT pg_stop_backup(true);" || echo "No backup in progress"
-                fi
-
-    # Backend upload data (no hooks needed for file-based storage)
-    - name: immich-backend-pvc
-      snapshotClass: zfs-generic-smb-csi
-
-    # Model cache (ML models for face recognition, etc.)
-    - name: immich-model-cache-pvc
-      snapshotClass: longhorn
+    hourly: 24
+    daily: 7
+    weekly: 4
+    monthly: 3
 
 ## =============================================================================
-## BorgBackup Configuration
+## BorgBackup Defaults
 ## =============================================================================
 borgbackup:
   image:
@@ -99,30 +60,24 @@ borgbackup:
     pullPolicy: IfNotPresent
 
   cron:
-    # Run every 6 hours at :30 (offset from snapshots)
     schedule: "30 */6 * * *"
     startingDeadlineSeconds: 300
     successfulJobsHistoryLimit: 1
     failedJobsHistoryLimit: 1
 
-  # CronJob timeout - sum of all backup timeouts + overhead
-  # 3 backups × ~2h each + 30min overhead = 6.5h
-  timeout: 23400  # 6.5 hours
+  timeout: 23400
 
-  # Borg pod configuration (spawned by controller for each backup)
   pod:
     image:
       repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
       tag: latest
       pullPolicy: IfNotPresent
-    # Privileged mode enabled by default (works with any PVC ownership)
-    # privileged: false  # Uncomment to disable if cluster security requires
+    privileged: true
     resources:
       requests:
         memory: "1Gi"
         cpu: "500m"
 
-  # Borg retention policy (applied during borg prune)
   retention:
     hourly: 24
     daily: 7
@@ -130,50 +85,129 @@ borgbackup:
     monthly: 3
     yearly: 1
 
-  # Borg cache for improved performance
-  cache:
-    create: true
-    pvcName: immich-borg-cache
-    storageClassName: openebs-hostpath
-    size: 5Gi
+## =============================================================================
+## Applications
+## =============================================================================
+apps:
+  - name: immich
+    namespace: immich
+    createNamespace: false
 
-  # Borg repository credentials
-  borgRepo: "ssh://user@user.repo.borgbase.com/./repo"
-  borgPassphrase: "your-secure-borg-passphrase-here"
+    # ==========================================================================
+    # Snapshot Configuration for Immich
+    # ==========================================================================
+    # Creates VolumeSnapshots for PVCs with tiered retention policy
+    # Supports pre/post hooks for database consistency
+    #
+    # IMPORTANT NOTES:
+    # - Pre-hooks run SEQUENTIALLY before snapshots. If ANY fails, process aborts.
+    # - Snapshots are created IN PARALLEL for speed.
+    # - Post-hooks run SEQUENTIALLY after snapshots. They ALWAYS run, even on failure.
+    # - Post-hooks also run on pod termination (SIGTERM) for safety.
+    snapshot:
+      pvcs:
+        # PostgreSQL database with consistency hooks
+        # IMPORTANT: Hooks ensure database is in consistent state for backup
+        - name: immich-db-pvc
+          snapshotClass: longhorn
+          hooks:
+            # Pre-hooks: Run BEFORE snapshots (executed sequentially, fail-fast)
+            # Use pod-exec to run commands in pods for database consistency
+            pre:
+              # Put PostgreSQL into backup mode before snapshot
+              # Handles both PG <15 (pg_start_backup) and PG >=15 (pg_backup_start)
+              - pod: immich-postgres-0
+                container: postgres  # Optional: specify container if pod has multiple
+                command:
+                  - /bin/bash
+                  - -c
+                  - |
+                    VERSION_NUM=$(psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;")
+                    if [ "$VERSION_NUM" -ge 150000 ]; then
+                      psql -U "$DB_USERNAME" -c "SELECT pg_backup_start(label => 'immich_snap', fast => true);"
+                    else
+                      psql -U "$DB_USERNAME" -c "SELECT pg_start_backup('immich_snap', true);"
+                    fi
+            # Post-hooks: Run AFTER snapshots (executed sequentially, ALWAYS run)
+            # These also run on pod termination (SIGTERM) for safety
+            post:
+              # Exit backup mode after snapshot
+              # ALWAYS runs, even if snapshot fails (SIGTERM handler ensures this)
+              - pod: immich-postgres-0
+                container: postgres
+                command:
+                  - /bin/bash
+                  - -c
+                  - |
+                    VERSION_NUM=$(psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;")
+                    if [ "$VERSION_NUM" -ge 150000 ]; then
+                      psql -U "$DB_USERNAME" -c "SELECT pg_backup_stop(wait_for_archive => true);" || echo "No backup in progress"
+                    else
+                      psql -U "$DB_USERNAME" -c "SELECT pg_stop_backup(true);" || echo "No backup in progress"
+                    fi
 
-  # SSH private key for repository access
-  sshPrivateKey: |
-    -----BEGIN OPENSSH PRIVATE KEY-----
-    YOUR_SSH_PRIVATE_KEY_HERE
-    Replace this with your actual BorgBase SSH private key
-    Generate with: ssh-keygen -t ed25519 -C "immich-backup"
-    Add public key to BorgBase repository settings
-    -----END OPENSSH PRIVATE KEY-----
+        # Backend upload data (no hooks needed for file-based storage)
+        - name: immich-backend-pvc
+          snapshotClass: zfs-generic-smb-csi
 
-  # PVCs to backup (must match snapshot PVCs above)
-  backups:
-    # Database backup - largest dataset, longest timeout
-    - name: immich-db
-      pvc: immich-db-pvc
-      # Use storage class with "Delete" reclaim policy for ephemeral clones
-      class: longhorn
-      # Timeout for large database (includes borg create + prune)
-      timeout: 7200  # 2 hours
-      # Wait up to 5min for clone PVC to provision from snapshot
-      cloneBindTimeout: 300
+        # Model cache (ML models for face recognition, etc.)
+        - name: immich-model-cache-pvc
+          snapshotClass: longhorn
 
-    # Backend uploads - potentially very large (photos/videos)
-    - name: immich-backend
-      pvc: immich-backend-pvc
-      class: zfs-generic-smb-csi
-      # Longer timeout for large media library
-      timeout: 10800  # 3 hours
-      cloneBindTimeout: 300
+    # ==========================================================================
+    # BorgBackup Configuration for Immich
+    # ==========================================================================
+    # Backs up VolumeSnapshots to BorgBackup repository (offsite storage)
+    #
+    # How it works:
+    # 1. Creates clone PVCs from latest VolumeSnapshots (parallel for speed)
+    # 2. Spawns ephemeral borg pods to backup each clone to remote repository
+    # 3. Cleans up temporary resources (clone PVCs, pods, secrets)
+    # 4. Backups run SEQUENTIALLY (borg repo only supports one writer)
+    borgbackup:
+      # Borg repository reference (defined in borgRepos section above)
+      borgRepo: borgbase-immich
 
-    # Model cache - smaller, faster
-    - name: immich-model-cache
-      pvc: immich-model-cache-pvc
-      class: longhorn
-      # Shorter timeout for small cache
-      timeout: 1800  # 30 minutes
-      cloneBindTimeout: 180
+      # Borg cache PVC (improves backup performance, REQUIRED and must be unique per-app)
+      cache:
+        create: true
+        pvcName: immich-borg-cache
+        storageClassName: openebs-hostpath
+        size: 5Gi
+
+      # PVCs to backup (must have corresponding snapshots created above)
+      # Each entry creates a clone PVC from the latest snapshot and backs it up
+      pvcs:
+        # Database backup
+        # Archive name will be: immich-db-YYYY-MM-DD-HH-MM-SS
+        - name: db
+          pvc: immich-db-pvc  # Must match snapshot PVC name
+          # Storage class for the CLONE PVC (not the original PVC)
+          # IMPORTANT: Choose a storage class with "Delete" reclaim policy to ensure
+          #            clone PVCs are automatically cleaned up at the storage layer
+          class: longhorn
+          # Timeout for this specific backup (seconds) - controls both:
+          # 1. Pod activeDeadlineSeconds: How long the borg pod is allowed to run
+          # 2. Borg --lock-wait: How long borg waits for repository lock
+          # Example: 7200 = 2 hours for large database backup
+          timeout: 7200
+          # Wait up to 5min for clone PVC to bind (WaitForFirstConsumer storage classes)
+          cloneBindTimeout: 300
+
+        # Backend uploads (potentially very large - photos/videos)
+        # Archive name will be: immich-backend-YYYY-MM-DD-HH-MM-SS
+        - name: backend
+          pvc: immich-backend-pvc
+          class: zfs-generic-smb-csi
+          # Longer timeout for large media library
+          timeout: 10800  # 3 hours
+          cloneBindTimeout: 300
+
+        # Model cache (smaller, faster)
+        # Archive name will be: immich-model-cache-YYYY-MM-DD-HH-MM-SS
+        - name: model-cache
+          pvc: immich-model-cache-pvc
+          class: longhorn
+          # Shorter timeout for small cache
+          timeout: 1800  # 30 minutes
+          cloneBindTimeout: 180

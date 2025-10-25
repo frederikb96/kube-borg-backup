@@ -1,14 +1,25 @@
+{{- $namespaces := dict -}}
+{{- range .Values.apps -}}
+  {{- $_ := set $namespaces .namespace true -}}
+{{- end -}}
+
+{{- range $namespace := keys $namespaces }}
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ .Values.serviceAccount.name }}
-  namespace: {{ .Values.namespace.name }}
+  name: {{ $.Values.serviceAccount.name }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "kube-borg-backup.labels" $ | nindent 4 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ .Values.serviceAccount.name }}-role
-  namespace: {{ .Values.namespace.name }}
+  name: {{ $.Values.serviceAccount.name }}-role
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "kube-borg-backup.labels" $ | nindent 4 }}
 rules:
   - apiGroups: ["snapshot.storage.k8s.io"]
     resources: ["volumesnapshots"]
@@ -29,13 +40,16 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ .Values.serviceAccount.name }}-rolebinding
-  namespace: {{ .Values.namespace.name }}
+  name: {{ $.Values.serviceAccount.name }}-rolebinding
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "kube-borg-backup.labels" $ | nindent 4 }}
 roleRef:
   kind: Role
-  name: {{ .Values.serviceAccount.name }}-role
+  name: {{ $.Values.serviceAccount.name }}-role
   apiGroup: rbac.authorization.k8s.io
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.serviceAccount.name }}
-    namespace: {{ .Values.namespace.name }}
+    name: {{ $.Values.serviceAccount.name }}
+    namespace: {{ $namespace }}
+{{- end }}

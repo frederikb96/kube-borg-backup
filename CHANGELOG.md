@@ -7,6 +7,265 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2025-10-25
+
+**MAJOR RELEASE** - Multi-application architecture with breaking changes. Not backwards compatible with 3.x.
+
+### Breaking Changes
+
+- **Helm Values Structure Complete Overhaul**
+  - Removed top-level `namespace` field (now per-app)
+  - Added `borgRepos[]` list for reusable repository definitions
+  - Added `apps[]` list for multi-application support
+  - Moved all app-specific config under `apps[].snapshot` and `apps[].borgbackup`
+  - Changed `borgbackup.borgRepo/borgPassphrase/sshPrivateKey` to reference `borgRepos[]` by name
+  - Changed `serviceAccount.name` default from `kube-borg-backup` to `kbb` (shorter)
+  - Borg archive names now auto-prefixed with app name (e.g., `immich-db-2025-10-25-14-30-00`)
+
+- **Resource Naming Convention**
+  - All resources now named `kbb-{app-name}-{resource-type}` instead of `{release-name}-{type}`
+  - Examples: `kbb-immich-snapshot`, `kbb-immich-borgbackup`, `kbb-immich-borg-cache`
+  - Enables multi-app deployments in single Helm release
+  - DNS-safe app names enforced (lowercase alphanumeric + hyphens)
+
+- **RBAC Resources**
+  - ServiceAccount/Role/RoleBinding now created per-namespace (deduplicated if apps share namespace)
+  - All use shortened `kbb` name by default instead of `kube-borg-backup`
+
+### Added
+
+- **Multi-Application Support**
+  - Single Helm deployment can now backup multiple applications
+  - Each app can have its own namespace, PVCs, schedules, and retention policies
+  - Apps can share borg repositories or use separate ones
+  - Per-app cache PVCs with unique names
+
+- **Reusable Borg Repository Definitions**
+  - Define borg repositories once in `borgRepos[]`
+  - Reference by name in `apps[].borgbackup.borgRepo`
+  - Share repositories across multiple apps
+  - Credentials stored centrally, resolved per-app in templates
+
+- **App Name Prefixing**
+  - Borg archive names automatically prefixed with app name
+  - Format: `{app-name}-{backup-name}-{timestamp}`
+  - Example: `immich-db-2025-10-25-14-30-00` (app=immich, backup=db)
+  - Prevents name collisions when multiple apps use same repository
+  - Retention pruning automatically scoped per-app
+
+- **Per-App Configuration Overrides**
+  - Global defaults for `snapshot` and `borgbackup` in root values
+  - Per-app overrides in `apps[].snapshot` and `apps[].borgbackup`
+  - Uses `mergeOverwrite` for proper precedence (app config wins)
+  - Supports overriding schedules, retention, timeouts, images, etc.
+
+- **Namespace Management**
+  - Optional `apps[].createNamespace` flag per app
+  - Apps can target different namespaces
+  - RBAC automatically created in all unique namespaces
+
+- **Helper Functions**
+  - `kube-borg-backup.validateAppName` - DNS-safe name validation
+  - `kube-borg-backup.validateSnapshotConfig` - Validates required snapshot.pvcs field
+  - `kube-borg-backup.validateBorgConfig` - Validates required borgbackup fields (cache, pvcs, borgRepo)
+  - `kube-borg-backup.resourceName` - Consistent `kbb-{app}-{resource}` naming
+  - `kube-borg-backup.mergeSnapshotConfig` - Default value merging for snapshots
+  - `kube-borg-backup.mergeBorgConfig` - Default value merging for borgbackup
+  - `kube-borg-backup.resolveBorgRepo` - Repository credential resolution
+  - `kube-borg-backup.uniqueNamespaces` - Namespace deduplication for RBAC
+
+- **Field Naming Improvements**
+  - Renamed `borgbackup.backups` → `borgbackup.pvcs` for clarity (values.yaml user-facing)
+  - Renamed `snapshot.pvcs` to match naming convention
+  - Templates still map to controller's expected `backups` field internally
+  - More intuitive: users configure PVCs, not abstract "backups"
+
+- **Validation & Error Messages**
+  - Added validation for required per-app fields
+  - Clear error messages instead of cryptic template errors
+  - Examples: "App 'myapp': borgbackup.cache is REQUIRED but not specified (must be unique per-app)"
+  - Prevents confusing nil pointer errors
+
+### Changed
+
+- **Template Architecture**
+  - All 7 templates rewritten to loop over `apps[]`
+  - Each template generates resources per-app with proper naming
+  - RBAC template deduplicates per-namespace instead of per-release
+  - Config secrets now include app-prefixed backup names
+
+- **Default Values**
+  - ServiceAccount name shortened to `kbb`
+  - Snapshot and borgbackup configs moved to root as defaults
+  - **Removed defaults for per-app fields** (`cache`, `pvcs`, `borgRepo`) - must be specified per-app
+  - Users must define `snapshot.pvcs` and `borgbackup.pvcs` for each app (prevents config errors)
+  - Added example single-app structure in default values.yaml with PostgreSQL hooks
+
+- **Example Configuration**
+  - Updated `example/values.yaml` to new structure
+  - Shows single Immich app with all features (PostgreSQL with hooks, multi-PVC backup)
+  - Demonstrates borgRepo reference pattern
+  - Includes app name prefixing comments
+  - Verbose inline documentation explaining hooks, timeouts, and archive naming
+  - Clear explanations of sequential vs parallel execution
+
+- **Test Configuration**
+  - Updated `.claude/tests/config/values.yaml` to new structure
+  - Single test app targeting `kube-borg-backup-dev` namespace
+  - Uses `borgbase-test` repository reference
+
+### Migration Guide
+
+**COMPLETE VALUES.YAML REWRITE REQUIRED**
+
+This is not a simple field rename - the entire structure has changed. See migration steps:
+
+#### Step 1: Define Borg Repositories
+
+```yaml
+# NEW (v4.0.0)
+borgRepos:
+  - name: borgbase-main
+    repo: "ssh://user@borgbase.com/./repo"
+    passphrase: "your-passphrase"
+    privateKey: |
+      -----BEGIN OPENSSH PRIVATE KEY-----
+      ...
+      -----END OPENSSH PRIVATE KEY-----
+```
+
+#### Step 2: Move Global Defaults
+
+```yaml
+# OLD (v3.0.0)
+namespace:
+  name: immich
+
+snapshot:
+  cron:
+    schedule: "0 * * * *"
+  # ... other snapshot config
+
+borgbackup:
+  cron:
+    schedule: "30 */6 * * *"
+  borgRepo: "ssh://..."
+  borgPassphrase: "..."
+  sshPrivateKey: |
+    ...
+  # ... other borgbackup config
+
+# NEW (v4.0.0)
+snapshot:
+  # Same fields, but now global defaults
+  cron:
+    schedule: "0 */4 * * *"  # Default for all apps
+
+borgbackup:
+  # Same fields, but now global defaults
+  cron:
+    schedule: "30 */6 * * *"  # Default for all apps
+  # Remove borgRepo/borgPassphrase/sshPrivateKey - now in borgRepos[]
+```
+
+#### Step 3: Create Apps List
+
+```yaml
+# NEW (v4.0.0)
+apps:
+  - name: immich  # CRITICAL: Used as archive prefix
+    namespace: immich
+    createNamespace: false
+
+    snapshot:
+      # Override schedule if needed
+      cron:
+        schedule: "0 * * * *"  # Hourly for this app
+      pvcs:
+        # Same structure as v3.0.0
+
+    borgbackup:
+      borgRepo: borgbase-main  # Reference borgRepos[].name
+      cache:
+        create: true
+        pvcName: immich-borg-cache  # Must be unique per-app
+        storageClassName: openebs-hostpath
+        size: 5Gi
+      backups:
+        # IMPORTANT: Remove app prefix from names
+        # OLD: name: immich-db
+        # NEW: name: db (will become "immich-db" in archive)
+        - name: db
+          pvc: immich-db-pvc
+          class: longhorn
+          timeout: 7200
+          cloneBindTimeout: 300
+```
+
+#### Step 4: Update ServiceAccount References
+
+If you have RBAC references in other resources:
+
+```yaml
+# OLD (v3.0.0)
+serviceAccountName: kube-borg-backup
+
+# NEW (v4.0.0)
+serviceAccountName: kbb  # Default changed to shorter name
+```
+
+#### Step 5: Update Resource Name References
+
+If you monitor/alert on specific CronJob names:
+
+```yaml
+# OLD (v3.0.0)
+{release-name}-snapshot
+{release-name}-borgbackup
+
+# NEW (v4.0.0)
+kbb-{app-name}-snapshot
+kbb-{app-name}-borgbackup
+```
+
+#### Example: Complete v3 to v4 Migration
+
+See `example/values.yaml` for full Immich example in v4 format.
+
+**For Multi-App Setup:**
+
+```yaml
+apps:
+  - name: immich
+    namespace: immich
+    # ... immich config
+
+  - name: nextcloud
+    namespace: nextcloud
+    # ... nextcloud config
+
+  - name: gitea
+    namespace: gitea
+    # ... gitea config
+
+# All three can share the same borgRepo or use different ones
+```
+
+### Technical Details
+
+- **Helm Chart**: `kube-borg-backup` v4.0.0
+- **Controller/Backup-runner**: Still v3.0.0 (NO code changes needed!)
+- **Python Controllers**: Unchanged - all changes in Helm templates only
+- **Kubernetes**: Still requires 1.25+ with CSI VolumeSnapshot support
+
+### Important Notes
+
+- **NO Python code changes** - controllers work identically with new config structure
+- **Archive naming**: Automatically prefixed with app name (transparent to controllers)
+- **Repository sharing**: Multiple apps can safely share borg repository (different prefixes)
+- **Testing**: Existing test scripts work unchanged (configs updated to v4 structure)
+- **Verbose templates OK**: Prioritized clarity over clever tricks per project conventions
+
 ## [3.0.0] - 2025-10-25
 
 **MAJOR RELEASE** - Package renaming and release workflow improvements.

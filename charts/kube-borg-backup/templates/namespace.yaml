@@ -1,8 +1,13 @@
-{{- if .Values.namespace.create }}
+{{- range .Values.apps }}
+{{- $_ := include "kube-borg-backup.validateAppName" .name -}}
+{{- if .createNamespace }}
+---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ .Values.namespace.name }}
+  name: {{ .namespace }}
   labels:
-    {{- include "kube-borg-backup.labels" . | nindent 4 }}
+    {{- include "kube-borg-backup.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ .name }}
+{{- end }}
 {{- end }}

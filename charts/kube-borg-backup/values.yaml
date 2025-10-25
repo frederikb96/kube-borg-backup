@@ -1,28 +1,25 @@
-## Namespace configuration
-namespace:
-  # Create namespace if it doesn't exist
-  create: false
-  # Namespace name where resources will be deployed
-  name: default
-
 ## ServiceAccount for RBAC permissions
 serviceAccount:
-  # Name of the ServiceAccount
-  # Needs permissions: volumesnapshots (create/list/delete), pvcs (create/list/delete), pods/exec (create)
-  name: kube-borg-backup
+  # Name of the ServiceAccount (created per-namespace)
+  # Needs permissions: volumesnapshots, pvcs, pods/exec, secrets
+  name: kbb
 
 ## =============================================================================
-## Snapshot Configuration
+## Borg Repository Definitions (Reusable)
 ## =============================================================================
-## Creates VolumeSnapshots for PVCs with tiered retention policy.
-## Supports pre/post hooks for database consistency (e.g., pg_backup_start/stop).
-##
-## IMPORTANT NOTES:
-## - Pre-hooks run SEQUENTIALLY before snapshots. If ANY fails, process aborts.
-## - Snapshots are created IN PARALLEL for speed.
-## - Post-hooks run SEQUENTIALLY after snapshots. They ALWAYS run, even on failure.
-## - Post-hooks also run on pod termination (SIGTERM) for safety.
-##
+## Define borg repositories once, reference by name in apps
+borgRepos:
+  - name: borgbase-main
+    repo: "ssh://user@borgbase.com/./repo"
+    passphrase: "your-borg-passphrase"
+    privateKey: |
+      -----BEGIN OPENSSH PRIVATE KEY-----
+      your-ssh-private-key-here
+      -----END OPENSSH PRIVATE KEY-----
+
+## =============================================================================
+## Snapshot Defaults (Applied to all apps unless overridden)
+## =============================================================================
 snapshot:
   # Container image configuration
   image:
@@ -33,7 +30,6 @@ snapshot:
   # CronJob schedule configuration
   cron:
     # When to run snapshots (cron format)
-    # Example: "0 */4 * * *" = Every 4 hours
     schedule: "0 */4 * * *"
     # Max seconds to wait before giving up on starting a job
     startingDeadlineSeconds: 60
@@ -44,53 +40,19 @@ snapshot:
 
   # CronJob timeout (activeDeadlineSeconds)
   # Maximum time in seconds for the snapshot controller to complete all snapshots
-  # The controller creates snapshots in parallel, so this should account for:
-  # - Pre-hook execution time (sequential, fail-fast)
-  # - Snapshot creation time (parallel)
-  # - Post-hook execution time (sequential, always run)
-  # Example: 600 = 10 min
   timeout: 600
 
   # Snapshot retention policy (tiered retention)
-  # Keeps 1 snapshot per time bucket (hourly/daily/weekly/monthly)
+  # Keeps 1 snapshot per time bucket
   retention:
-    # Keep 1 snapshot per hour for last N hours
     hourly: 24
-    # Keep 1 snapshot per day for last N days
     daily: 7
-    # Keep 1 snapshot per week for last N weeks
     weekly: 4
-    # Keep 1 snapshot per month for last N months
     monthly: 3
 
-  # PVCs to snapshot
-  pvcs:
-    # Example with database that needs pause/resume
-    - name: postgres-data
-      snapshotClass: longhorn
-      hooks:
-        # Pre-hooks: Run BEFORE snapshots (executed sequentially, fail-fast)
-        # Use pod-exec to run commands in pods for database consistency
-        pre:
-          - pod: postgres-0
-            container: postgres  # Optional: specify container if pod has multiple
-            command: ["psql", "-U", "postgres", "-c", "SELECT pg_backup_start()"]
-        # Post-hooks: Run AFTER snapshots (executed sequentially, ALWAYS run)
-        # These also run on pod termination (SIGTERM) for safety
-        post:
-          - pod: postgres-0
-            command: ["psql", "-U", "postgres", "-c", "SELECT pg_backup_stop()"]
-
-    # Example without hooks (file-based storage)
-    - name: app-data
-      snapshotClass: longhorn
-      # No hooks needed for file-based storage
-
 ## =============================================================================
-## BorgBackup Configuration
+## BorgBackup Defaults (Applied to all apps unless overridden)
 ## =============================================================================
-## Backs up VolumeSnapshots to BorgBackup repository.
-##
 borgbackup:
   # Container image configuration
   image:
@@ -101,7 +63,6 @@ borgbackup:
   # CronJob schedule configuration
   cron:
     # When to run backups (cron format)
-    # Example: "30 */6 * * *" = Every 6 hours at :30
     schedule: "30 */6 * * *"
     # Max seconds to wait before giving up on starting a job
     startingDeadlineSeconds: 300
@@ -112,9 +73,6 @@ borgbackup:
 
   # CronJob timeout (activeDeadlineSeconds)
   # Maximum time in seconds for the backup controller to complete all backups
-  # The controller processes backups SEQUENTIALLY (borg limitation), so this should
-  # account for the sum of all individual backup timeouts plus overhead
-  # Example: 7200 = 2 hours for multiple sequential backups
   timeout: 7200
 
   # Borg pod configuration (spawned by backup controller)
@@ -123,78 +81,73 @@ borgbackup:
       repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
       tag: latest
       pullPolicy: Always
-    # Privileged mode is enabled by default for maximum PVC compatibility
-    # Bypasses filesystem permission checks, works with any PVC ownership (PostgreSQL, MySQL, etc.)
-    # Uncomment to disable if cluster security policies restrict privileged containers:
-    # privileged: false
+    # Privileged mode enabled by default for maximum PVC compatibility
+    privileged: true
     resources:
       requests:
         memory: "1Gi"
         cpu: "500m"
 
   # Borg retention policy (applied during borg prune)
-  # These control how many archives to keep in the borg repository
-  # Note: This is different from snapshot retention (which uses tiered buckets)
   retention:
-    # Keep 1 archive per hour for last N hours
     hourly: 24
-    # Keep 1 archive per day for last N days
     daily: 7
-    # Keep 1 archive per week for last N weeks
     weekly: 4
-    # Keep 1 archive per month for last N months
     monthly: 3
-    # Keep 1 archive per year for last N years
     yearly: 1
 
-  # Borg cache PVC (improves backup performance)
-  cache:
-    create: true
-    pvcName: borg-cache
-    storageClassName: local-path
-    size: 5Gi
+## =============================================================================
+## Applications (List of apps to backup)
+## =============================================================================
+apps:
+  - name: example-app
+    namespace: default
+    createNamespace: false
 
-  # Borg repository URL (ssh://user@host/repo)
-  borgRepo: "ssh://user@borgbase.com/./repo"
+    # Optional: Override snapshot defaults for this app
+    snapshot:
+      pvcs:
+        # Example: PostgreSQL database with consistency hooks
+        - name: postgres-data
+          snapshotClass: longhorn
+          hooks:
+            # Pre-hooks run BEFORE snapshot (sequential, fail-fast)
+            pre:
+              - pod: postgres-0
+                container: postgres  # Optional: specify if pod has multiple containers
+                command: ["psql", "-U", "postgres", "-c", "SELECT pg_backup_start('snapshot', true);"]
+            # Post-hooks run AFTER snapshot (sequential, ALWAYS run even on failure)
+            post:
+              - pod: postgres-0
+                container: postgres
+                command: ["psql", "-U", "postgres", "-c", "SELECT pg_backup_stop(true);"]
 
-  # Borg repository passphrase
-  borgPassphrase: "your-borg-passphrase"
+        # Example: File-based storage without hooks
+        - name: app-data
+          snapshotClass: longhorn
 
-  # SSH private key for repository access
-  # Controller creates ephemeral secrets dynamically per backup
-  sshPrivateKey: |
-    -----BEGIN OPENSSH PRIVATE KEY-----
-    your-ssh-private-key-here
-    -----END OPENSSH PRIVATE KEY-----
+    # Optional: Override borgbackup defaults for this app
+    borgbackup:
+      # Reference to borg repository (from borgRepos list above)
+      borgRepo: borgbase-main
 
-  # PVCs to backup (must have corresponding snapshots created above)
-  backups:
-    - name: postgres-db
-      pvc: postgres-data
-      # Storage class for the CLONE PVC (not the original PVC)
-      # The controller creates temporary clone PVCs from snapshots for backup
-      # IMPORTANT: Choose a storage class with "Delete" reclaim policy to ensure
-      #            clone PVCs are automatically cleaned up at the storage layer
-      #            when deleted, preventing storage waste
-      # Common choices:
-      # - Longhorn with "Delete" policy (ephemeral clones)
-      # - ZFS with "Delete" policy (ephemeral clones)
-      # - local-path for testing (usually "Delete" by default)
-      class: longhorn
-      # Timeout for this specific backup (seconds) - REQUIRED
-      # This controls TWO things:
-      # 1. Pod activeDeadlineSeconds: How long the borg pod is allowed to run
-      # 2. Borg --lock-wait: How long borg waits for repository lock
-      # Note: Pod will be killed before lock-wait fires, but we set them equal
-      #       to ensure lock-wait is never too small
-      # Example: 3600 = 1 hour for large database backup
-      timeout: 3600
-      # Optional: Override clone PVC bind timeout (default: 300s)
-      # cloneBindTimeout: 300
+      # Borg cache PVC (REQUIRED per-app, must be unique)
+      cache:
+        create: true
+        pvcName: example-borg-cache
+        storageClassName: local-path
+        size: 5Gi
 
-    - name: app-data
-      pvc: app-data
-      class: longhorn
-      # Smaller timeout for smaller dataset
-      # Example: 1800 = 30 minutes
-      timeout: 1800
+      # PVCs to backup (must have corresponding snapshots created above)
+      pvcs:
+        - name: postgres-db
+          pvc: postgres-data
+          class: longhorn
+          timeout: 3600
+          cloneBindTimeout: 300
+
+        - name: app-data-backup
+          pvc: app-data
+          class: longhorn
+          timeout: 1800
+          cloneBindTimeout: 300

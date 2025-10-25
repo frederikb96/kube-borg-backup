@@ -1,28 +1,33 @@
+{{- range .Values.apps }}
+{{- $_ := include "kube-borg-backup.validateAppName" .name -}}
+{{- $snapshotConfig := fromJson (include "kube-borg-backup.mergeSnapshotConfig" (dict "root" $ "app" .)) -}}
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "kube-borg-backup.fullname" . }}-snapshot
-  namespace: {{ .Values.namespace.name }}
+  name: {{ include "kube-borg-backup.resourceName" (dict "appName" .name "resource" "snapshot") }}
+  namespace: {{ .namespace }}
   labels:
-    {{- include "kube-borg-backup.labels" . | nindent 4 }}
+    {{- include "kube-borg-backup.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ .name }}
 spec:
-  schedule: {{ .Values.snapshot.cron.schedule | quote }}
+  schedule: {{ $snapshotConfig.cron.schedule | quote }}
   concurrencyPolicy: Forbid
-  startingDeadlineSeconds: {{ .Values.snapshot.cron.startingDeadlineSeconds }}
-  successfulJobsHistoryLimit: {{ .Values.snapshot.cron.successfulJobsHistoryLimit }}
-  failedJobsHistoryLimit: {{ .Values.snapshot.cron.failedJobsHistoryLimit }}
+  startingDeadlineSeconds: {{ $snapshotConfig.cron.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $snapshotConfig.cron.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $snapshotConfig.cron.failedJobsHistoryLimit }}
   jobTemplate:
     spec:
-      activeDeadlineSeconds: {{ .Values.snapshot.timeout }}
+      activeDeadlineSeconds: {{ $snapshotConfig.timeout }}
       backoffLimit: 0
       template:
         spec:
-          serviceAccountName: {{ .Values.serviceAccount.name }}
+          serviceAccountName: {{ $.Values.serviceAccount.name }}
           restartPolicy: Never
           containers:
             - name: snapshot
-              image: "{{ .Values.snapshot.image.repository }}:{{ .Values.snapshot.image.tag }}"
-              imagePullPolicy: {{ .Values.snapshot.image.pullPolicy }}
+              image: "{{ $snapshotConfig.image.repository }}:{{ $snapshotConfig.image.tag }}"
+              imagePullPolicy: {{ $snapshotConfig.image.pullPolicy }}
               command: ["python", "-m", "kube_pvc_snapshot.main"]
               volumeMounts:
                 - name: config
@@ -31,4 +36,5 @@ spec:
           volumes:
             - name: config
               secret:
-                secretName: {{ include "kube-borg-backup.snapshotConfigSecret" . }}
+                secretName: {{ include "kube-borg-backup.resourceName" (dict "appName" .name "resource" "snapshot-config") }}
+{{- end }}
