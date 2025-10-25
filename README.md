@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/frederikb96/kube-borg-backup)](LICENSE)
 [![Controller Build](https://img.shields.io/github/actions/workflow/status/frederikb96/kube-borg-backup/controller-image.yaml?label=controller)](https://github.com/frederikb96/kube-borg-backup/actions/workflows/controller-image.yaml)
 [![Backup Runner Build](https://img.shields.io/github/actions/workflow/status/frederikb96/kube-borg-backup/backup-runner-image.yaml?label=backup-runner)](https://github.com/frederikb96/kube-borg-backup/actions/workflows/backup-runner-image.yaml)
-[![Helm Chart](https://img.shields.io/badge/helm-v2.0.0-blue)](https://frederikb96.github.io/kube-borg-backup)
+[![Helm Chart](https://img.shields.io/badge/helm-chart-blue)](https://frederikb96.github.io/kube-borg-backup)
 
 Kubernetes backup solution combining **instant CSI snapshots** with **async BorgBackup** for production-grade application backups.
 
