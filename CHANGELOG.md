@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.0] - 2025-10-25
+
+### Added
+
+- **Storage Class Validation** (Controller v3.1.0)
+  - Added `validate_storage_class()` function to check storage class exists before creating clone PVC
+  - Catches configuration errors early (e.g., typo in storage class name)
+  - Clear error messages: "Storage class 'xyz' not found"
+  - Prevents clone PVCs from staying Pending forever with cryptic errors
+
+- **Enhanced PVC Error Logging** (Controller v3.1.0)
+  - `wait_clone_pvc_ready()` now checks PVC events every 10 seconds during wait
+  - New `_check_pvc_events_for_errors()` helper surfaces actual provisioning failures
+  - Detects errors immediately instead of after full timeout (300s → ~10s)
+  - Example: "❌ PVC provisioning failed: storageclass.storage.k8s.io 'longhorn-tmp' not found"
+  - Searches for keywords: ProvisioningFailed, not found, failed, error, cannot, unable
+
+- **Optimized Parallel Clone Creation** (Controller v3.1.0)
+  - Phase 1: Submit ALL clone PVC creation requests in parallel (non-blocking)
+  - Phase 2: Process backups sequentially, waiting for each clone individually before its backup
+  - First backup starts as soon as first clone is ready (no wait for all clones)
+  - While backup N runs, clones N+1, N+2, etc. continue provisioning in background
+  - Performance improvement scales with number of PVCs
+  - New `ClonePVC` dataclass to track clone state across phases
+  - New `create_single_clone_pvc()` for parallel execution via ThreadPoolExecutor
+
+- **ClusterRole for Storage Classes** (Helm Chart v4.1.0)
+  - Added ClusterRole with `storage.k8s.io/storageclasses` read permissions
+  - ClusterRoleBinding created per-namespace for each ServiceAccount
+  - Required for new storage class validation feature
+  - Minimal cluster-scoped permissions (get, list only)
+
+### Changed
+
+- **Backup Orchestration Flow** (Controller v3.1.0)
+  - Refactored `main()` to use two-phase approach
+  - Moved clone creation out of `process_backup()` into separate `create_all_clone_pvcs()`
+  - Renamed `process_backup()` → `process_backup_with_clone()` to clarify it receives ready clone
+  - Each backup now waits for its specific clone only, not all clones upfront
+  - Better separation of concerns: provisioning vs backup execution
+
+### Fixed
+
+- **Ruff Linting** (Controller v3.1.0)
+  - Removed unnecessary f-string prefix from log message without placeholders
+  - All ruff checks now pass
+  - Mypy type checking still passes (strict mode)
+
 ## [4.0.0] - 2025-10-25
 
 **MAJOR RELEASE** - Multi-application architecture with breaking changes. Not backwards compatible with 3.x.

@@ -5,10 +5,12 @@ This module orchestrates the BorgBackup process:
 2. Execute backups sequentially (borg repo only supports one writer)
 3. Clean up temporary resources (always, even on SIGTERM)
 
-Each backup creates a temporary clone PVC from the latest snapshot, spawns
-a borg pod to back it up to the remote repository, then deletes both
-resources. The process continues even if individual backups fail, reporting
-all failures at the end.
+The controller uses an optimized two-phase approach:
+- Phase 1: Start ALL clone PVC creation in parallel (non-blocking)
+- Phase 2: Process backups SEQUENTIALLY, waiting for each clone individually
+
+This maximizes parallelism - while backup N runs, clones N+1, N+2, etc. continue
+provisioning in the background. First backup starts as soon as first clone is ready.
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ import os
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
@@ -35,7 +39,20 @@ SNAP_PLURAL = "volumesnapshots"
 _tracked_resources: dict[str, list[str]] = {"clone_pvcs": [], "borg_pods": [], "ssh_secrets": []}
 _namespace: str | None = None
 _core_api: client.CoreV1Api | None = None
+_storage_api: client.StorageV1Api | None = None
 _failures: list[str] = []
+
+
+@dataclass
+class ClonePVC:
+    """Represents a clone PVC and its associated backup configuration."""
+    backup_name: str
+    pvc_name: str
+    clone_name: str
+    snapshot_name: str
+    backup_config: dict[str, Any]
+    failed: bool = False
+    failure_reason: str | None = None
 
 
 def log_msg(msg: str) -> None:
@@ -79,7 +96,7 @@ def load_config(cli_path: str | None) -> dict[str, Any]:
     return data
 
 
-def init_clients() -> tuple[client.CoreV1Api, client.CustomObjectsApi]:
+def init_clients() -> tuple[client.CoreV1Api, client.CustomObjectsApi, client.StorageV1Api]:
     """Initialize Kubernetes API clients."""
     try:
         k8s_config.load_incluster_config()
@@ -89,7 +106,7 @@ def init_clients() -> tuple[client.CoreV1Api, client.CustomObjectsApi]:
         except Exception as exc:
             log_msg(f"❌ Failed to load kubeconfig: {exc}")
             sys.exit(3)
-    return client.CoreV1Api(), client.CustomObjectsApi()
+    return client.CoreV1Api(), client.CustomObjectsApi(), client.StorageV1Api()
 
 
 def cleanup_all_resources() -> None:
@@ -125,6 +142,27 @@ def cleanup_all_resources() -> None:
 
     log_msg("✅ Cleanup complete")
     sys.exit(143)  # Standard exit code for SIGTERM
+
+
+def validate_storage_class(storage_api: client.StorageV1Api, storage_class: str) -> tuple[bool, str]:
+    """Validate that a storage class exists.
+
+    Args:
+        storage_api: StorageV1Api client
+        storage_class: Storage class name to validate
+
+    Returns:
+        Tuple of (exists: bool, error_message: str or empty)
+    """
+    try:
+        storage_api.read_storage_class(storage_class)
+        return True, ""
+    except ApiException as exc:
+        if exc.status == 404:
+            return False, f"Storage class '{storage_class}' not found"
+        return False, f"Failed to validate storage class '{storage_class}': {exc}"
+    except Exception as exc:
+        return False, f"Unexpected error validating storage class '{storage_class}': {exc}"
 
 
 def latest_snapshot(
@@ -282,7 +320,7 @@ def wait_clone_pvc_ready(
     pvc_name: str,
     namespace: str,
     timeout: int = 300
-) -> bool:
+) -> tuple[bool, str]:
     """Wait for clone PVC to be Bound or WaitForFirstConsumer.
 
     Handles both Immediate and WaitForFirstConsumer storage classes.
@@ -295,17 +333,23 @@ def wait_clone_pvc_ready(
         timeout: Timeout in seconds
 
     Returns:
-        True if PVC is ready, False on timeout
+        Tuple of (success: bool, error_message: str or empty)
     """
     start_time = time.time()
+    last_event_check = 0.0
 
     while True:
         elapsed = int(time.time() - start_time)
 
         # Check timeout
         if elapsed >= timeout:
+            # Final event check to surface actual error
+            error_msg = _check_pvc_events_for_errors(v1, pvc_name, namespace)
+            if error_msg:
+                log_msg(f"❌ PVC {pvc_name} provisioning failed: {error_msg}")
+                return False, error_msg
             log_msg(f"⏰ Timeout waiting for PVC {pvc_name} after {elapsed}s")
-            return False
+            return False, f"Timeout after {elapsed}s"
 
         try:
             # Get PVC status
@@ -315,25 +359,76 @@ def wait_clone_pvc_ready(
             # Check if Bound
             if status == "Bound":
                 log_msg(f"✅ PVC {pvc_name} is Bound after {elapsed}s")
-                return True
+                return True, ""
 
             # Check if WaitForFirstConsumer (ready to be used by pod)
             if status == "Pending":
-                # Get events for the PVC
-                events = v1.list_namespaced_event(
-                    namespace,
-                    field_selector=f"involvedObject.name={pvc_name},involvedObject.kind=PersistentVolumeClaim"
-                )
-                for event in events.items:
-                    if "WaitForFirstConsumer" in event.message or "waiting for first consumer" in event.message:
-                        log_msg(f"🕓 PVC {pvc_name} waiting for first consumer after {elapsed}s - ready to use")
-                        return True
+                # Check events every 10 seconds to detect errors early
+                current_time = time.time()
+                if current_time - last_event_check >= 10:
+                    last_event_check = current_time
+                    error_msg = _check_pvc_events_for_errors(v1, pvc_name, namespace)
+                    if error_msg:
+                        log_msg(f"❌ PVC {pvc_name} provisioning failed: {error_msg}")
+                        return False, error_msg
+
+                    # Check if WaitForFirstConsumer
+                    events = v1.list_namespaced_event(
+                        namespace,
+                        field_selector=f"involvedObject.name={pvc_name},involvedObject.kind=PersistentVolumeClaim"
+                    )
+                    for event in events.items:
+                        if "WaitForFirstConsumer" in event.message or "waiting for first consumer" in event.message:
+                            log_msg(f"🕓 PVC {pvc_name} waiting for first consumer after {elapsed}s - ready to use")
+                            return True, ""
 
         except ApiException as exc:
             log_msg(f"⚠️ Error checking PVC {pvc_name}: {exc}")
-            return False
+            return False, str(exc)
 
         time.sleep(5)
+
+
+def _check_pvc_events_for_errors(
+    v1: client.CoreV1Api,
+    pvc_name: str,
+    namespace: str
+) -> str:
+    """Check PVC events for provisioning errors.
+
+    Args:
+        v1: CoreV1Api client
+        pvc_name: PVC name to check events for
+        namespace: Kubernetes namespace
+
+    Returns:
+        Error message if found, empty string otherwise
+    """
+    try:
+        events = v1.list_namespaced_event(
+            namespace,
+            field_selector=f"involvedObject.name={pvc_name},involvedObject.kind=PersistentVolumeClaim"
+        )
+
+        # Look for error/warning events
+        error_keywords = [
+            "ProvisioningFailed",
+            "not found",
+            "failed",
+            "error",
+            "cannot",
+            "unable"
+        ]
+
+        for event in events.items:
+            if event.type in ["Warning", "Error"]:
+                message = event.message.lower()
+                if any(keyword in message for keyword in error_keywords):
+                    return event.message
+
+        return ""
+    except ApiException:
+        return ""
 
 
 def build_borg_pod_manifest(
@@ -525,10 +620,172 @@ def delete_secret(v1: client.CoreV1Api, name: str, namespace: str) -> None:
         pass
 
 
-def process_backup(
-    backup_config: dict[str, Any],
+def create_single_clone_pvc(
     v1: client.CoreV1Api,
     snap_api: client.CustomObjectsApi,
+    storage_api: client.StorageV1Api,
+    backup_config: dict[str, Any],
+    namespace: str
+) -> ClonePVC:
+    """Create a single clone PVC from snapshot.
+
+    This function handles all steps for creating one clone PVC:
+    - Validate backup config
+    - Find latest snapshot
+    - Validate storage class exists
+    - Create clone PVC
+    - Track it for cleanup
+
+    Args:
+        v1: CoreV1Api client
+        snap_api: CustomObjectsApi client
+        storage_api: StorageV1Api client
+        backup_config: Backup configuration
+        namespace: Kubernetes namespace
+
+    Returns:
+        ClonePVC object (with failed=True if creation failed)
+    """
+    name = backup_config.get("name", "unknown")
+    pvc = backup_config.get("pvc")
+    storage_class = backup_config.get("class")
+
+    # Validate required fields
+    if not all([name, pvc, storage_class]):
+        log_msg(f"❌ Backup '{name}': Missing required fields (name, pvc, class)")
+        return ClonePVC(
+            backup_name=name,
+            pvc_name=pvc or "",
+            clone_name="",
+            snapshot_name="",
+            backup_config=backup_config,
+            failed=True,
+            failure_reason="Config error - missing required fields"
+        )
+
+    # Type narrowing
+    assert isinstance(name, str)
+    assert isinstance(pvc, str)
+    assert isinstance(storage_class, str)
+
+    try:
+        # Find latest snapshot
+        log_msg(f"🔍 [{name}] Finding latest snapshot for PVC: {pvc}")
+        snap_name = latest_snapshot(snap_api, pvc, namespace)
+        if not snap_name:
+            log_msg(f"❌ [{name}] No ready snapshot found for PVC: {pvc}")
+            return ClonePVC(
+                backup_name=name,
+                pvc_name=pvc,
+                clone_name="",
+                snapshot_name="",
+                backup_config=backup_config,
+                failed=True,
+                failure_reason="No snapshot found"
+            )
+        log_msg(f"✅ [{name}] Found snapshot: {snap_name}")
+
+        # Validate storage class exists
+        log_msg(f"🔍 [{name}] Validating storage class: {storage_class}")
+        exists, error_msg = validate_storage_class(storage_api, storage_class)
+        if not exists:
+            log_msg(f"❌ [{name}] {error_msg}")
+            return ClonePVC(
+                backup_name=name,
+                pvc_name=pvc,
+                clone_name="",
+                snapshot_name=snap_name,
+                backup_config=backup_config,
+                failed=True,
+                failure_reason=error_msg
+            )
+        log_msg(f"✅ [{name}] Storage class validated")
+
+        # Create clone PVC
+        ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+        clone_name = f"{snap_name}-clone-{ts}"
+        log_msg(f"📦 [{name}] Creating clone PVC: {clone_name}")
+        create_clone_pvc(v1, snap_api, snap_name, clone_name, storage_class, namespace)
+        log_msg(f"✅ [{name}] Clone PVC created")
+
+        return ClonePVC(
+            backup_name=name,
+            pvc_name=pvc,
+            clone_name=clone_name,
+            snapshot_name=snap_name,
+            backup_config=backup_config,
+            failed=False
+        )
+
+    except Exception as exc:
+        log_msg(f"❌ [{name}] Unexpected error creating clone PVC: {exc}")
+        return ClonePVC(
+            backup_name=name,
+            pvc_name=pvc,
+            clone_name="",
+            snapshot_name="",
+            backup_config=backup_config,
+            failed=True,
+            failure_reason=str(exc)
+        )
+
+
+def create_all_clone_pvcs(
+    v1: client.CoreV1Api,
+    snap_api: client.CustomObjectsApi,
+    storage_api: client.StorageV1Api,
+    backups: list[dict[str, Any]],
+    namespace: str
+) -> list[ClonePVC]:
+    """Create all clone PVCs in parallel (non-blocking).
+
+    This function starts all clone PVC creation requests in parallel but
+    does NOT wait for them to be ready. Each clone will be checked
+    individually in Phase 2 right before its backup runs.
+
+    Args:
+        v1: CoreV1Api client
+        snap_api: CustomObjectsApi client
+        storage_api: StorageV1Api client
+        backups: List of backup configurations
+        namespace: Kubernetes namespace
+
+    Returns:
+        List of ClonePVC objects (ready state unknown at return time)
+    """
+    log_msg(f"\n{'='*60}")
+    log_msg("📦 Phase 1: Creating ALL clone PVCs in parallel")
+    log_msg(f"{'='*60}")
+
+    clone_pvcs: list[ClonePVC] = []
+
+    # Create all clone PVCs in parallel using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(backups)) as executor:
+        futures = {
+            executor.submit(
+                create_single_clone_pvc,
+                v1, snap_api, storage_api, backup_cfg, namespace
+            ): backup_cfg
+            for backup_cfg in backups
+        }
+
+        for future in futures:
+            clone_pvc = future.result()
+            clone_pvcs.append(clone_pvc)
+
+            if clone_pvc.failed:
+                log_msg(f"❌ [{clone_pvc.backup_name}] Clone creation failed: {clone_pvc.failure_reason}")
+                _failures.append(f"{clone_pvc.backup_name}: {clone_pvc.failure_reason}")
+
+    log_msg("✅ All clone PVC creation requests submitted in parallel")
+    log_msg("📝 Note: Clone PVCs will be checked individually before each backup")
+
+    return clone_pvcs
+
+
+def process_backup_with_clone(
+    clone_pvc: ClonePVC,
+    v1: client.CoreV1Api,
     release_name: str,
     pod_config: dict[str, Any],
     borg_repo: str,
@@ -539,12 +796,14 @@ def process_backup(
     namespace: str,
     test_mode: bool
 ) -> bool:
-    """Process a single backup: create clone, spawn borg pod, cleanup.
+    """Process a single backup: wait for clone ready, spawn borg pod, cleanup.
+
+    This function waits for the specific clone PVC to be ready (allowing
+    other clones to provision in parallel), then runs the borg backup.
 
     Args:
-        backup_config: Backup configuration (name, pvc, class, timeout)
+        clone_pvc: ClonePVC object with clone details
         v1: CoreV1Api client
-        snap_api: CustomObjectsApi client
         release_name: Helm release fullname for pod naming
         pod_config: Pod configuration
         borg_repo: Borg repository URL
@@ -558,60 +817,44 @@ def process_backup(
     Returns:
         True if successful, False if failed
     """
-    name = backup_config.get("name")
-    pvc = backup_config.get("pvc")
-    storage_class = backup_config.get("class")
-    timeout = backup_config.get("timeout")
-    clone_bind_timeout = backup_config.get("cloneBindTimeout")
+    name = clone_pvc.backup_name
+    timeout = clone_pvc.backup_config.get("timeout")
 
-    if not all([name, pvc, storage_class, timeout, clone_bind_timeout]):
-        log_msg(
-            f"❌ Backup config missing required fields "
-            f"(name, pvc, class, timeout, cloneBindTimeout): {backup_config}"
-        )
-        _failures.append(f"{name or 'unknown'}: Config error - missing required fields")
+    if not timeout:
+        log_msg(f"❌ [{name}] Backup config missing timeout field")
+        _failures.append(f"{name}: Config error - missing timeout")
         return False
 
-    # Type narrowing: all fields validated as non-None above
-    assert isinstance(name, str)
-    assert isinstance(pvc, str)
-    assert isinstance(storage_class, str)
     assert isinstance(timeout, int)
-    assert isinstance(clone_bind_timeout, int)
 
     log_msg(f"\n{'='*60}")
-    log_msg(f"🔄 Starting backup: {name}")
+    log_msg(f"🔄 Processing backup: {name}")
     log_msg(f"{'='*60}")
 
-    clone_name = None
+    # Skip if clone failed in Phase 1
+    if clone_pvc.failed:
+        log_msg(f"⏭️  [{name}] Skipping - clone PVC creation failed in Phase 1")
+        return False
+
+    # Wait for THIS clone PVC to be ready (while other clones provision in background)
+    clone_bind_timeout = clone_pvc.backup_config.get("cloneBindTimeout", 300)
+    assert isinstance(clone_bind_timeout, int)
+
+    log_msg(f"⏳ [{name}] Waiting for clone PVC to be ready: {clone_pvc.clone_name} (timeout: {clone_bind_timeout}s)")
+    success, error_msg = wait_clone_pvc_ready(v1, clone_pvc.clone_name, namespace, clone_bind_timeout)
+
+    if not success:
+        log_msg(f"❌ [{name}] Clone PVC not ready: {error_msg}")
+        _failures.append(f"{name}: Clone PVC bind failed: {error_msg}")
+        return False
+
+    log_msg(f"✅ [{name}] Clone PVC ready - starting backup")
+
     pod_name = None
     config_secret_name = None
 
     try:
-        # Step 1: Find latest snapshot
-        log_msg(f"🔍 Finding latest snapshot for PVC: {pvc}")
-        snap_name = latest_snapshot(snap_api, pvc, namespace)
-        if not snap_name:
-            log_msg(f"❌ No ready snapshot found for PVC: {pvc}")
-            _failures.append(f"{name}: No snapshot found")
-            return False
-        log_msg(f"✅ Found snapshot: {snap_name}")
-
-        # Step 2: Create clone PVC
-        ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
-        clone_name = f"{snap_name}-clone-{ts}"
-        log_msg(f"📦 Creating clone PVC: {clone_name}")
-        create_clone_pvc(v1, snap_api, snap_name, clone_name, storage_class, namespace)
-        log_msg("✅ Clone PVC created")
-
-        # Step 3: Wait for clone PVC to be ready
-        log_msg(f"⏳ Waiting for clone PVC to be ready (timeout: {clone_bind_timeout}s)...")
-        if not wait_clone_pvc_ready(v1, clone_name, namespace, clone_bind_timeout):
-            log_msg(f"❌ Clone PVC {clone_name} not ready after {clone_bind_timeout}s")
-            _failures.append(f"{name}: Clone PVC bind timeout")
-            return False
-
-        # Step 4: Spawn borg pod (or skip in test mode)
+        # Step 1: Spawn borg pod (or skip in test mode)
         if test_mode:
             log_msg(f"🧪 TEST MODE: Skipping borg pod spawn for {name}")
             log_msg("🧪 TEST MODE: Simulating 2 second backup...")
@@ -619,7 +862,8 @@ def process_backup(
             log_msg("✅ TEST MODE: Backup simulation successful")
             return True
 
-        # Step 4a: Create ephemeral secret with config file
+        # Step 1a: Create ephemeral secret with config file
+        ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
         pod_name = f"{release_name}-borg-{name}-{ts}"
         config_secret_name = f"{pod_name}-config"
         log_msg(f"🔐 Creating ephemeral config secret: {config_secret_name}")
@@ -631,10 +875,10 @@ def process_backup(
         )
         log_msg("✅ Config secret created")
 
-        # Step 4b: Build and spawn borg pod
+        # Step 1b: Build and spawn borg pod
         log_msg(f"🚀 Spawning borg pod: {pod_name}")
         manifest = build_borg_pod_manifest(
-            pod_name, name, clone_name, pod_config,
+            pod_name, name, clone_pvc.clone_name, pod_config,
             config_secret_name, cache_pvc,
             timeout, namespace
         )
@@ -660,14 +904,24 @@ def process_backup(
         if pod_name:
             log_msg(f"🗑️  Cleaning up borg pod: {pod_name}")
             delete_pod(v1, pod_name, namespace)
-        if clone_name:
-            log_msg(f"🗑️  Cleaning up clone PVC: {clone_name}")
-            delete_pvc(v1, clone_name, namespace)
+        if clone_pvc.clone_name:
+            log_msg(f"🗑️  Cleaning up clone PVC: {clone_pvc.clone_name}")
+            delete_pvc(v1, clone_pvc.clone_name, namespace)
 
 
 def main() -> None:
-    """Main execution flow."""
-    global _namespace, _core_api
+    """Main execution flow with optimized two-phase approach.
+
+    Phase 1: Start ALL clone PVC creation in parallel (non-blocking)
+    Phase 2: Process backups SEQUENTIALLY (borg lock limitation)
+             - Wait for each specific clone to be ready
+             - Run backup while other clones provision in background
+             - Cleanup and move to next backup
+
+    This maximizes parallelism - first backup starts as soon as first
+    clone is ready, even if other clones are still provisioning.
+    """
+    global _namespace, _core_api, _storage_api
 
     # Register SIGTERM handler
     signal.signal(signal.SIGTERM, lambda s, f: cleanup_all_resources())
@@ -683,8 +937,9 @@ def main() -> None:
 
     test_mode = args.test
 
-    v1, snap_api = init_clients()
+    v1, snap_api, storage_api = init_clients()
     _core_api = v1
+    _storage_api = storage_api
 
     log_msg(f"🔧 Using namespace: {namespace}")
     if test_mode:
@@ -714,15 +969,23 @@ def main() -> None:
         sys.exit(0)
 
     log_msg(f"\n{'='*60}")
-    log_msg(f"🎯 Processing {len(backups)} backup(s) SEQUENTIALLY")
+    log_msg(f"🎯 Starting backup process for {len(backups)} backup(s)")
     log_msg(f"{'='*60}")
     log_msg(f"📋 Release: {release_name}")
     log_msg(f"📋 Retention: {retention}")
+    log_msg("📋 Strategy: Start all clones in parallel → Wait individually per backup")
 
-    # Process backups sequentially (borg repo only supports one writer)
-    for backup_cfg in backups:
-        _ = process_backup(  # Result unused, failures tracked in _failures global
-            backup_cfg, v1, snap_api, release_name, pod_config,
+    # Phase 1: Create ALL clone PVCs in parallel
+    clone_pvcs = create_all_clone_pvcs(v1, snap_api, storage_api, backups, namespace)
+
+    # Phase 2: Process backups SEQUENTIALLY (borg repo only supports one writer)
+    log_msg(f"\n{'='*60}")
+    log_msg("🔄 Phase 2: Processing backups SEQUENTIALLY")
+    log_msg(f"{'='*60}")
+
+    for clone_pvc in clone_pvcs:
+        _ = process_backup_with_clone(  # Result unused, failures tracked in _failures global
+            clone_pvc, v1, release_name, pod_config,
             borg_repo, borg_passphrase, ssh_private_key, cache_pvc,
             retention, namespace, test_mode
         )
