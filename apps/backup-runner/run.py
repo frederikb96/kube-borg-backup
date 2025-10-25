@@ -4,10 +4,12 @@
 This script orchestrates BorgBackup operations:
 1. Reads configuration from mounted config file
 2. Sets up SSH authentication
-3. Checks/initializes Borg repository
-4. Creates backup archive
-5. Applies retention policy
-6. Handles graceful shutdown on SIGTERM/SIGINT
+3. Creates backup archive (directly, no pre-check)
+4. Applies retention policy
+5. Handles graceful shutdown on SIGTERM/SIGINT
+
+If backup fails with exit code 2 (typically uninitialized repo),
+falls back to checking/initializing repository and retries.
 """
 
 import argparse
@@ -302,9 +304,6 @@ def run_backup(config: dict) -> int:
     logger.info(f"Lock wait timeout: {lock_wait}s")
     logger.info(f"PID: {os.getpid()}")
 
-    # Check repository status
-    check_repo_status(borg_repo, borg_passphrase, borg_rsh)
-
     # Build archive name with UTC timestamp
     archive_name = f"{prefix}-{datetime.now(UTC).strftime('%Y-%m-%d-%H-%M-%S')}"
     archive = f"{borg_repo}::{archive_name}"
@@ -338,6 +337,24 @@ def run_backup(config: dict) -> int:
         # Wait for borg to complete
         exit_code = _borg_process.wait()
         _borg_process = None
+
+        # If exit code 2, check repo status and retry
+        if exit_code == 2:
+            logger.info("Borg create failed with exit code 2, checking repository status...")
+            check_repo_status(borg_repo, borg_passphrase, borg_rsh)
+
+            # Retry borg create after repo check/init
+            logger.info("Retrying backup after repository check...")
+            _borg_process = subprocess.Popen(
+                borg_create_cmd,
+                env=env,
+                stdout=sys.stdout,
+                stderr=sys.stderr
+            )
+
+            logger.info(f"Borg PID: {_borg_process.pid}")
+            exit_code = _borg_process.wait()
+            _borg_process = None
 
         if exit_code != 0:
             logger.error(f"Borg exited with code: {exit_code}")

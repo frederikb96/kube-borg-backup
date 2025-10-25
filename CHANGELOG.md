@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.4] - 2025-10-25
+
+### Fixed
+
+- **Borg Info Timeout on Large Repositories** (backup-runner v5.0.4)
+  - Skip initial `borg info` check at startup to avoid timeouts on large repos
+  - Now attempts `borg create` directly for faster backups
+  - Falls back to `borg info` + repo initialization only if create fails with exit code 2
+  - Reduces backup time by 5-10 seconds in normal operations
+  - Fixes timeout issues with repositories containing many archives
+
 ## [5.0.3] - 2025-10-25
 
 ### Fixed
