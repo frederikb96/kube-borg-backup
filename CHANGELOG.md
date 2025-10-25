@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.0] - 2025-10-25
+
+### Added
+
+- **Optional `archivePrefix` per PVC** (Helm Chart v4.2.0)
+  - New optional field `archivePrefix` in borgbackup.pvcs configuration
+  - Allows custom borg archive prefix per backup instead of default `{app-name}-{backup-name}`
+  - If omitted, uses default naming: `test-postgres-data-2025-10-25-14-30-00`
+  - If set, uses custom prefix directly: `my-custom-backup-2025-10-25-14-30-00`
+  - Useful for maintaining existing archive names during migration or matching legacy naming schemes
+  - Example: `archivePrefix: legacy-db-backup`
+
+- **Cache PVC Documentation** (Helm Chart v4.2.0)
+  - Added inline documentation for cache PVC behavior
+  - Clarifies: `create: true` → creates new PVC with name `pvcName`
+  - Clarifies: `create: false` → uses existing PVC with name `pvcName` (must exist)
+  - Documents which fields only apply when `create: true` (storageClassName, size)
+
+### Changed
+
+- **Hardcoded ServiceAccount Name** (Helm Chart v4.2.0)
+  - Removed `serviceAccount.name` from values.yaml (was configurable, always set to `kbb`)
+  - ServiceAccount name now hardcoded to `kbb` via helper function `kube-borg-backup.serviceAccountName`
+  - Simplifies configuration (one less field to set)
+  - **BREAKING:** If you customized `serviceAccount.name`, it will be ignored and reset to `kbb`
+
+### Fixed
+
+- **Cache PVC Naming** (Helm Chart v4.2.0)
+  - Reverted accidental `kbb-` prefix on cache PVC names from v4.1.0
+  - Cache PVC now uses `pvcName` directly without any prefix
+  - Maintains backward compatibility with existing cache PVCs
+  - Example: `kimai-borg-cache` not `kbb-kimai-borg-cache`
+
 ## [4.1.0] - 2025-10-25
 
 ### Added

@@ -1,9 +1,3 @@
-## ServiceAccount for RBAC permissions
-serviceAccount:
-  # Name of the ServiceAccount (created per-namespace)
-  # Needs permissions: volumesnapshots, pvcs, pods/exec, secrets
-  name: kbb
-
 ## =============================================================================
 ## Borg Repository Definitions (Reusable)
 ## =============================================================================
@@ -132,11 +126,13 @@ apps:
       borgRepo: borgbase-main
 
       # Borg cache PVC (REQUIRED per-app, must be unique)
+      # - If create: true → creates new PVC with name 'pvcName'
+      # - If create: false → uses existing PVC with name 'pvcName' (must exist)
       cache:
-        create: true
-        pvcName: example-borg-cache
-        storageClassName: local-path
-        size: 5Gi
+        create: true              # Create new PVC or use existing
+        pvcName: example-borg-cache  # PVC name (created or referenced)
+        storageClassName: local-path  # Storage class (only used if create: true)
+        size: 5Gi                # Size (only used if create: true)
 
       # PVCs to backup (must have corresponding snapshots created above)
       pvcs:
@@ -145,6 +141,8 @@ apps:
           class: longhorn
           timeout: 3600
           cloneBindTimeout: 300
+          # Optional: Override borg archive prefix (default: {app-name}-{backup-name})
+          # archivePrefix: custom-db-backup
 
         - name: app-data-backup
           pvc: app-data

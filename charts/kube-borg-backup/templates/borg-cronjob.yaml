@@ -22,7 +22,7 @@ spec:
       backoffLimit: 0
       template:
         spec:
-          serviceAccountName: {{ $.Values.serviceAccount.name }}
+          serviceAccountName: {{ include "kube-borg-backup.serviceAccountName" $ }}
           restartPolicy: Never
           containers:
             - name: borgbackup

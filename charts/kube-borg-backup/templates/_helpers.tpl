@@ -51,6 +51,13 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
+Service account name (hardcoded)
+*/}}
+{{- define "kube-borg-backup.serviceAccountName" -}}
+kbb
+{{- end -}}
+
+{{/*
 Generate resource name with kbb prefix and app name
 Usage: {{ include "kube-borg-backup.resourceName" (dict "appName" .name "resource" "snapshot-cronjob") }}
 */}}
