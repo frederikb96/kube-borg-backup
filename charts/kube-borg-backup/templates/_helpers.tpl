@@ -113,7 +113,7 @@ Returns: merged snapshot config with app overrides taking precedence
 {{- define "kube-borg-backup.mergeSnapshotConfig" -}}
 {{- $defaults := .root.Values.snapshot -}}
 {{- $appConfig := .app.snapshot | default dict -}}
-{{- toJson (mergeOverwrite $defaults $appConfig) -}}
+{{- toJson (mergeOverwrite (deepCopy $defaults) $appConfig) -}}
 {{- end -}}
 
 {{/*
@@ -124,7 +124,7 @@ Returns: merged borgbackup config with app overrides taking precedence
 {{- define "kube-borg-backup.mergeBorgConfig" -}}
 {{- $defaults := .root.Values.borgbackup -}}
 {{- $appConfig := .app.borgbackup | default dict -}}
-{{- toJson (mergeOverwrite $defaults $appConfig) -}}
+{{- toJson (mergeOverwrite (deepCopy $defaults) $appConfig) -}}
 {{- end -}}
 
 {{/*

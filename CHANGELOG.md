@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.3] - 2025-10-25
+
+### Fixed
+
+- **Critical Multi-App Config Mutation Bug** (Helm Chart v5.0.3)
+  - Fixed `mergeOverwrite` mutating shared defaults across app iterations
+  - Bug caused ALL apps to use the LAST app's cache PVC name and other config values
+  - Symptom: `kbb-immich-borg-cache` PVC created in wrong namespaces (kimai, immich)
+  - Root cause: Helm's `mergeOverwrite` modifies first argument in-place
+  - Solution: Use `deepCopy` before merging to prevent mutation
+  - Affected helpers: `mergeBorgConfig` and `mergeSnapshotConfig`
+  - Impact: Multi-app deployments now use correct per-app configuration
+
 ## [5.0.2] - 2025-10-25
 
 ### Fixed
