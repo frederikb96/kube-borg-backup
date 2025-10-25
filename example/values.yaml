@@ -22,7 +22,7 @@ serviceAccount:
 ## =============================================================================
 snapshot:
   image:
-    repository: ghcr.io/frederikb96/kube-borg-backup-controller
+    repository: ghcr.io/frederikb96/kube-borg-backup/controller
     tag: latest
     pullPolicy: IfNotPresent
 
@@ -94,7 +94,7 @@ snapshot:
 ## =============================================================================
 borgbackup:
   image:
-    repository: ghcr.io/frederikb96/kube-borg-backup-controller
+    repository: ghcr.io/frederikb96/kube-borg-backup/controller
     tag: latest
     pullPolicy: IfNotPresent
 
@@ -112,7 +112,7 @@ borgbackup:
   # Borg pod configuration (spawned by controller for each backup)
   pod:
     image:
-      repository: ghcr.io/frederikb96/kube-borg-backup-essentials
+      repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
       tag: latest
       pullPolicy: IfNotPresent
     # Privileged mode enabled by default (works with any PVC ownership)

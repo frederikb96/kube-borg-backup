@@ -3,7 +3,7 @@
 [![Release](https://img.shields.io/github/v/release/frederikb96/kube-borg-backup)](https://github.com/frederikb96/kube-borg-backup/releases)
 [![License](https://img.shields.io/github/license/frederikb96/kube-borg-backup)](LICENSE)
 [![Controller Build](https://img.shields.io/github/actions/workflow/status/frederikb96/kube-borg-backup/controller-image.yaml?label=controller)](https://github.com/frederikb96/kube-borg-backup/actions/workflows/controller-image.yaml)
-[![Essentials Build](https://img.shields.io/github/actions/workflow/status/frederikb96/kube-borg-backup/essentials-image.yaml?label=essentials)](https://github.com/frederikb96/kube-borg-backup/actions/workflows/essentials-image.yaml)
+[![Backup Runner Build](https://img.shields.io/github/actions/workflow/status/frederikb96/kube-borg-backup/backup-runner-image.yaml?label=backup-runner)](https://github.com/frederikb96/kube-borg-backup/actions/workflows/backup-runner-image.yaml)
 [![Helm Chart](https://img.shields.io/badge/helm-v2.0.0-blue)](https://frederikb96.github.io/kube-borg-backup)
 
 Kubernetes backup solution combining **instant CSI snapshots** with **async BorgBackup** for production-grade application backups.
@@ -149,8 +149,8 @@ The tool consists of three components:
 2. **Backup CronJob** - Python controller that creates clone PVCs and orchestrates Borg pods
 3. **Borg Pods** - Ephemeral privileged pods spawned per backup to run actual `borg create` and `borg prune`
 
-Both CronJobs use the unified `kube-borg-backup-controller` image (Python 3.13) with different entrypoints.
-Borg pods use the `kube-borg-backup-essentials` image (Alpine + borgbackup + Python 3.13).
+Both CronJobs use the unified `kube-borg-backup/controller` image (Python 3.13) with different entrypoints.
+Borg pods use the `kube-borg-backup/backup-runner` image (Alpine + borgbackup + Python 3.13).
 
 **Technologies:**
 - Python 3.13 with kubernetes client library

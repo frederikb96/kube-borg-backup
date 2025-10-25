@@ -3,7 +3,7 @@ target-version = "py313"
 exclude = [
   ".venv",
   "apps/controller/.venv",
-  "apps/essentials/.venv",
+  "apps/backup-runner/.venv",
   ".claude",
 ]
 

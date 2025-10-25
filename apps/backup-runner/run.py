@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Borgbackup essentials container - Python rewrite of run.sh.
+"""Borgbackup backup-runner container - Python rewrite of run.sh.
 
 This script orchestrates BorgBackup operations:
 1. Reads configuration from mounted config file
@@ -37,7 +37,7 @@ _borg_repo: str | None = None
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Borgbackup essentials container")
+    parser = argparse.ArgumentParser(description="Borgbackup backup-runner container")
     parser.add_argument(
         "-c", "--config",
         default="/config/config.yaml",

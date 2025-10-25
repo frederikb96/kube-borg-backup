@@ -16,21 +16,21 @@ jobs:
       - name: Delete untagged controller images
         uses: actions/delete-package-versions@v5
         with:
-          package-name: 'kube-borg-backup-controller'
+          package-name: 'kube-borg-backup/controller'
           package-type: 'container'
           min-versions-to-keep: 0
           delete-only-untagged-versions: 'true'
 
-  cleanup-essentials:
+  cleanup-backup-runner:
     runs-on: ubuntu-latest
     permissions:
       packages: write
       contents: read
     steps:
-      - name: Delete untagged essentials images
+      - name: Delete untagged backup-runner images
         uses: actions/delete-package-versions@v5
         with:
-          package-name: 'kube-borg-backup-essentials'
+          package-name: 'kube-borg-backup/backup-runner'
           package-type: 'container'
           min-versions-to-keep: 0
           delete-only-untagged-versions: 'true'

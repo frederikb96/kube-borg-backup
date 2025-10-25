@@ -152,8 +152,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Technical Details
 
-- **Controller Image**: `ghcr.io/frederikb96/kube-borg-backup-controller:2.0.0` (Python 3.13-slim, 2 entrypoints)
-- **Essentials Image**: `ghcr.io/frederikb96/kube-borg-backup-essentials:2.0.0` (Python 3.13-alpine + borgbackup)
+- **Controller Image**: `ghcr.io/frederikb96/kube-borg-backup/controller:2.0.0` (Python 3.13-slim, 2 entrypoints)
+- **Essentials Image**: `ghcr.io/frederikb96/kube-borg-backup/backup-runner:2.0.0` (Python 3.13-alpine + borgbackup)
 - **Helm Chart**: `kube-borg-backup` v2.0.0
 - **Kubernetes**: Requires 1.25+ with CSI VolumeSnapshot support
 - **Testing**: Comprehensive test suite in `.claude/tests/` (Python direct, Docker, Helm)

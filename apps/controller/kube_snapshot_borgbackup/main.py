@@ -380,7 +380,7 @@ def build_borg_pod_manifest(
                 {
                     "name": "borg",
                     "image": (
-                        f"{pod_config.get('image', {}).get('repository', 'ghcr.io/frederikb96/kube-borg-backup-essentials')}"  # noqa: E501
+                        f"{pod_config.get('image', {}).get('repository', 'ghcr.io/frederikb96/kube-borg-backup/backup-runner')}"  # noqa: E501
                         f":{pod_config.get('image', {}).get('tag', 'latest')}"
                     ),
                     "imagePullPolicy": pod_config.get("image", {}).get("pullPolicy", "IfNotPresent"),

@@ -26,7 +26,7 @@ serviceAccount:
 snapshot:
   # Container image configuration
   image:
-    repository: ghcr.io/frederikb96/kube-borg-backup-controller
+    repository: ghcr.io/frederikb96/kube-borg-backup/controller
     tag: latest
     pullPolicy: Always
 
@@ -94,7 +94,7 @@ snapshot:
 borgbackup:
   # Container image configuration
   image:
-    repository: ghcr.io/frederikb96/kube-borg-backup-controller
+    repository: ghcr.io/frederikb96/kube-borg-backup/controller
     tag: latest
     pullPolicy: Always
 
@@ -120,7 +120,7 @@ borgbackup:
   # Borg pod configuration (spawned by backup controller)
   pod:
     image:
-      repository: ghcr.io/frederikb96/kube-borg-backup-essentials
+      repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
       tag: latest
       pullPolicy: Always
     # Privileged mode is enabled by default for maximum PVC compatibility

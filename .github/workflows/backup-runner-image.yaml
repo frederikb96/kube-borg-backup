@@ -1,12 +1,12 @@
-name: Container - Essentials
+name: Container - Backup Runner
 
 on:
   push:
     branches:
       - main
     paths:
-      - "apps/essentials/**"
-      - ".github/workflows/essentials-image.yaml"
+      - "apps/backup-runner/**"
+      - ".github/workflows/backup-runner-image.yaml"
 
 permissions:
   contents: write
@@ -21,7 +21,7 @@ jobs:
       - name: Read project version
         id: ver
         run: |
-          echo "version=$(cat apps/essentials/VERSION)" >> "$GITHUB_OUTPUT"
+          echo "version=$(cat apps/backup-runner/VERSION)" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
@@ -39,10 +39,10 @@ jobs:
       - name: Build & Push Multi-Arch Image
         uses: docker/build-push-action@v4
         with:
-          context: apps/essentials
+          context: apps/backup-runner
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/kube-borg-backup-essentials:latest
-            ghcr.io/${{ github.repository_owner }}/kube-borg-backup-essentials:${{ steps.ver.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/kube-borg-backup/backup-runner:latest
+            ghcr.io/${{ github.repository_owner }}/kube-borg-backup/backup-runner:${{ steps.ver.outputs.version }}
 
