@@ -238,7 +238,7 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
     2. Execute pre-hooks (fail-fast)
     3. Determine target PVC (explicit or first backup PVC)
     4. Create ephemeral config Secret
-    5. Spawn borg-restore pod (120s max)
+    5. Spawn borg-restore pod (no timeout - can take hours for large datasets)
     6. Execute post-hooks (best-effort)
     7. Cleanup pod + secret
 
@@ -309,7 +309,7 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
             print(f"Error creating config Secret: {e}", file=sys.stderr)
             sys.exit(1)
 
-        # Step 5: Spawn borg-restore pod (120s timeout)
+        # Step 5: Spawn borg-restore pod (no timeout - can take hours for large datasets)
         pod_name = f"kbb-{args.app}-restore-{int(time.time())}"
 
         # Get cache PVC name
@@ -358,13 +358,15 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
             )
         )
 
+        print(f"Spawning borg restore pod '{pod_name}'...")
+        print("⏳ Restoring from borg archive - this may take hours for large datasets...")
+
         try:
             v1.create_namespaced_pod(args.namespace, pod)
             print(f"Borg restore pod '{pod_name}' created")
 
-            # Wait for completion (120s max)
-            start_time = time.time()
-            while time.time() - start_time < 120:
+            # Wait for completion (no timeout - let it run as long as needed)
+            while True:
                 pod_status = v1.read_namespaced_pod_status(pod_name, args.namespace)
                 phase = pod_status.status.phase
 
@@ -379,9 +381,6 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
                     raise Exception(f"Restore pod failed:\n{logs}")
 
                 time.sleep(2)
-            else:
-                # Timeout after 120s
-                raise Exception("Restore pod timeout after 120s")
 
         except Exception as e:
             print(f"Restore failed: {e}", file=sys.stderr)

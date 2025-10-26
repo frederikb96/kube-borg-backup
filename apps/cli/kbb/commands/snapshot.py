@@ -95,7 +95,7 @@ def restore_snapshot(args: argparse.Namespace) -> None:
     3. Find snapshot and extract source PVC
     4. Determine target PVC (explicit or in-place restore)
     5. Create clone PVC from snapshot
-    6. Spawn rsync pod to copy data (120s max)
+    6. Spawn rsync pod to copy data (no timeout - can take hours for large volumes)
     7. Execute post-hooks (best-effort)
     8. Cleanup clone PVC
 
@@ -141,7 +141,10 @@ def restore_snapshot(args: argparse.Namespace) -> None:
                 name=args.snapshot_id
             )
         except client.exceptions.ApiException as e:
-            print(f"Error: VolumeSnapshot '{args.snapshot_id}' not found in namespace '{args.namespace}'", file=sys.stderr)
+            print(
+                f"Error: VolumeSnapshot '{args.snapshot_id}' not found in namespace '{args.namespace}'",
+                file=sys.stderr
+            )
             print(f"Details: {e}", file=sys.stderr)
             sys.exit(1)
 
@@ -174,14 +177,15 @@ def restore_snapshot(args: argparse.Namespace) -> None:
         )
         print(f"Clone PVC created: {clone_result['name']} (binding mode: {clone_result['binding_mode']})")
 
-        # Step 6: Spawn rsync pod (120s max)
+        # Step 6: Spawn rsync pod (no timeout - restore can take hours for large volumes)
         print(f"Spawning rsync pod to copy data to '{target_pvc}'...")
+        print("⏳ This may take a while for large volumes - please be patient...")
         try:
             rsync_result = spawn_rsync_pod(
                 namespace=args.namespace,
                 source_pvc_name=clone_pvc_name,
                 target_pvc_name=target_pvc,
-                timeout=120,  # CRITICAL: Never wait longer than 120s
+                # NO timeout - restore operations can take hours for large volumes
                 image_repository=image_repository,
                 image_tag=image_tag
             )

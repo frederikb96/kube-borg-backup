@@ -100,7 +100,7 @@ def spawn_rsync_pod(
     source_pvc_name: str,
     target_pvc_name: str,
     pod_name: str | None = None,
-    timeout: int = 300,
+    timeout: int | None = None,
     image_repository: str = 'ghcr.io/frederikb96/kube-borg-backup/backup-runner',
     image_tag: str = 'latest'
 ) -> dict[str, Any]:
@@ -117,7 +117,8 @@ def spawn_rsync_pod(
         source_pvc_name: Source PVC name (clone from snapshot)
         target_pvc_name: Target PVC name (destination)
         pod_name: Optional pod name (auto-generated if not provided)
-        timeout: Pod completion timeout in seconds (default: 300)
+        timeout: Optional timeout in seconds (None = no timeout, waits indefinitely)
+                 WARNING: Setting timeout on restore can kill large data transfers!
         image_repository: Container image repository (default: backup-runner)
         image_tag: Container image tag (default: latest)
 
@@ -185,9 +186,9 @@ def spawn_rsync_pod(
         print(f"Error creating rsync pod '{pod_name}': {e}", file=sys.stderr)
         raise
 
-    # Wait for completion with timeout
+    # Wait for completion (with optional timeout)
     start_time = time.time()
-    while time.time() - start_time < timeout:
+    while True:
         try:
             pod_status = v1.read_namespaced_pod_status(pod_name, namespace)
             phase = pod_status.status.phase
@@ -221,20 +222,22 @@ def spawn_rsync_pod(
 
                 raise Exception(f"Rsync pod '{pod_name}' failed:\n{logs}")
 
+            # Only check timeout if one was provided
+            if timeout is not None and (time.time() - start_time) > timeout:
+                # Timeout - get logs and cleanup
+                try:
+                    logs = v1.read_namespaced_pod_log(pod_name, namespace)
+                except client.exceptions.ApiException:
+                    logs = "Could not retrieve pod logs"
+
+                try:
+                    v1.delete_namespaced_pod(pod_name, namespace)
+                except client.exceptions.ApiException:
+                    pass  # Ignore deletion errors
+
+                raise Exception(f"Rsync pod '{pod_name}' timeout after {timeout}s:\n{logs}")
+
         except client.exceptions.ApiException as e:
             print(f"Error checking pod status: {e}", file=sys.stderr)
 
         time.sleep(2)
-
-    # Timeout - get logs and cleanup
-    try:
-        logs = v1.read_namespaced_pod_log(pod_name, namespace)
-    except client.exceptions.ApiException:
-        logs = "Could not retrieve pod logs"
-
-    try:
-        v1.delete_namespaced_pod(pod_name, namespace)
-    except client.exceptions.ApiException:
-        pass  # Ignore deletion errors
-
-    raise Exception(f"Rsync pod '{pod_name}' timeout after {timeout}s:\n{logs}")
