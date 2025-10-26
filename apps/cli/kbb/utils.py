@@ -23,16 +23,16 @@ def load_kube_client() -> tuple[client.CoreV1Api, client.CustomObjectsApi]:
     return client.CoreV1Api(), client.CustomObjectsApi()
 
 
-def find_app_config(namespace: str, app_name: str) -> dict[str, Any]:
-    """Find config Secret for app via labels.
+def find_app_config(namespace: str, app_name: str, release_name: str, config_type: str = 'snapshot') -> dict[str, Any]:
+    """Find config Secret for app via direct name construction.
 
-    Searches for Secret with:
-    - app.kubernetes.io/managed-by=kube-borg-backup
-    - app.kubernetes.io/component=<app_name>
+    Secret naming convention: {release_name}-{app_name}-{config_type}-config
 
     Args:
         namespace: Kubernetes namespace
         app_name: Application name
+        release_name: Helm release name
+        config_type: Config type ('snapshot' or 'borg')
 
     Returns:
         Parsed config dict from Secret's config.yaml
@@ -42,31 +42,23 @@ def find_app_config(namespace: str, app_name: str) -> dict[str, Any]:
     """
     v1, _ = load_kube_client()
 
-    # List secrets with label selector
-    label_selector = (
-        'app.kubernetes.io/managed-by=kube-borg-backup,'
-        f'app.kubernetes.io/component={app_name}'
-    )
+    # Construct Secret name directly
+    secret_name = f"{release_name}-{app_name}-{config_type}-config"
 
     try:
-        secrets = v1.list_namespaced_secret(
-            namespace,
-            label_selector=label_selector
-        )
+        secret = v1.read_namespaced_secret(secret_name, namespace)
     except ApiException as e:
-        raise ValueError(f"Failed to list secrets in namespace '{namespace}': {e}")
-
-    if not secrets.items:
-        raise ValueError(
-            f"No config found for app '{app_name}' in namespace '{namespace}'\n"
-            f"Expected Secret with labels: {label_selector}"
-        )
+        if e.status == 404:
+            raise ValueError(
+                f"Config Secret not found: '{secret_name}' in namespace '{namespace}'\n"
+                f"Expected Secret from Helm release '{release_name}' for app '{app_name}'"
+            ) from e
+        raise ValueError(f"Failed to read Secret '{secret_name}': {e}") from e
 
     # Parse config.yaml from Secret
-    secret = secrets.items[0]
     config_data_b64 = secret.data.get('config.yaml')
     if not config_data_b64:
-        raise ValueError(f"Secret '{secret.metadata.name}' missing config.yaml data")
+        raise ValueError(f"Secret '{secret_name}' missing config.yaml data")
 
     config_yaml = base64.b64decode(config_data_b64).decode('utf-8')
     config_data = yaml.safe_load(config_yaml)

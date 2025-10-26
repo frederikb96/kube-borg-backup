@@ -23,6 +23,11 @@ def create_parser() -> argparse.ArgumentParser:
         required=True,
         help='Application name'
     )
+    parser.add_argument(
+        '--release',
+        required=True,
+        help='Helm release name'
+    )
 
     # Subcommands
     subparsers = parser.add_subparsers(dest='command', required=True)
