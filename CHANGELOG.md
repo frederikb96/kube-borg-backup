@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.7] - 2025-10-26
+
+### Added
+
+- **Longhorn Volume Readiness Detection** (controller v5.0.7)
+  - Automatically detects Longhorn CSI volumes via PV driver inspection
+  - Waits for Longhorn volume to reach `attached+healthy` state before spawning borg pods
+  - Additional 15-second grace period for CSI workload readiness
+  - Prevents "volume not ready for workloads" pod mount failures
+  - RBAC: Added `longhorn.io/volumes` get/list permissions to ServiceAccount
+
+### Improved
+
+- **Clean Longhorn Polling Output** (controller v5.0.7)
+  - Removed verbose status messages during Longhorn volume polling
+  - Silently polls every 2 seconds, only logs when volume is ready or times out
+  - Cleaner, less spammy log output
+
 ## [5.0.6] - 2025-10-26
 
 ### Added

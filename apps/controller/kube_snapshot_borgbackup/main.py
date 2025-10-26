@@ -166,6 +166,91 @@ def validate_storage_class(storage_api: client.StorageV1Api, storage_class: str)
         return False, f"Unexpected error validating storage class '{storage_class}': {exc}"
 
 
+def is_longhorn_volume(v1: client.CoreV1Api, pvc: Any) -> bool:
+    """Check if PVC is provisioned by Longhorn CSI driver.
+
+    Args:
+        v1: CoreV1Api client
+        pvc: PVC object
+
+    Returns:
+        True if PVC uses driver.longhorn.io, False otherwise
+    """
+    try:
+        # PVC must be bound to have a PV
+        if not pvc.spec.volume_name:
+            return False
+
+        # Read the bound PV
+        pv = v1.read_persistent_volume(pvc.spec.volume_name)
+
+        # Check CSI driver
+        if pv.spec.csi and pv.spec.csi.driver == "driver.longhorn.io":
+            return True
+
+        return False
+
+    except ApiException:
+        return False
+
+
+def is_longhorn_volume_ready(pv_name: str) -> bool:
+    """Check if Longhorn volume is ready for workload attachment.
+
+    Args:
+        pv_name: PersistentVolume name (same as Longhorn volume name)
+
+    Returns:
+        True if status.state="attached" AND status.robustness="healthy"
+    """
+    try:
+        custom_api = client.CustomObjectsApi()
+
+        # Query Longhorn volume CRD
+        lh_volume = custom_api.get_namespaced_custom_object(
+            group="longhorn.io",
+            version="v1beta2",
+            namespace="longhorn-system",
+            plural="volumes",
+            name=pv_name
+        )
+
+        # Extract status fields (no 'ready' field exists in v1beta2)
+        status = lh_volume.get("status", {})
+        state = status.get("state", "unknown")
+        robustness = status.get("robustness", "unknown")
+
+        # Check readiness: must be attached AND healthy
+        is_ready = (state == "attached" and robustness == "healthy")
+
+        # Only log when ready (reduces polling spam)
+        if is_ready:
+            log_msg(f"✅ Longhorn volume {pv_name} is ready (attached + healthy)")
+
+        return is_ready
+
+    except ApiException as exc:
+        # If volume doesn't exist or not accessible, log and handle appropriately
+        reason = exc.reason if hasattr(exc, 'reason') else str(exc)
+        status_code = exc.status if hasattr(exc, 'status') else 'unknown'
+
+        # Check for RBAC/permission errors (403 Forbidden, 401 Unauthorized)
+        if status_code in [403, 401]:
+            log_msg("❌ RBAC ERROR: Missing permissions to query Longhorn volumes.longhorn.io CRD")
+            log_msg(f"❌ Status {status_code}: {reason}")
+            log_msg("❌ Ensure ServiceAccount has ClusterRole with:")
+            log_msg("   - apiGroups: ['longhorn.io']")
+            log_msg("   - resources: ['volumes']")
+            log_msg("   - verbs: ['get', 'list']")
+            # DO NOT proceed - this is a configuration error that needs fixing
+            return False
+
+        # For other errors (404 not found, network issues), proceed anyway
+        log_msg(f"⚠️  Could not query Longhorn volume {pv_name} (status {status_code}): {reason}")
+        log_msg("⚠️  Volume may not be Longhorn-managed or API temporarily unavailable - proceeding")
+        return True
+
+
 def latest_snapshot(
     snap_api: client.CustomObjectsApi,
     pvc: str,
@@ -326,6 +411,7 @@ def wait_clone_pvc_ready(
 
     Handles both Immediate and WaitForFirstConsumer storage classes.
     For WaitForFirstConsumer, the PVC won't bind until a pod uses it.
+    For Longhorn volumes, additionally waits for workload readiness.
 
     Args:
         v1: CoreV1Api client
@@ -360,6 +446,31 @@ def wait_clone_pvc_ready(
             # Check if Bound
             if status == "Bound":
                 log_msg(f"✅ PVC {pvc_name} is Bound after {elapsed}s")
+
+                # If PVC is Bound, check if it's Longhorn and wait for workload readiness
+                if is_longhorn_volume(v1, pvc):
+                    log_msg("⏳ Longhorn volume detected, waiting for workload readiness...")
+
+                    # Wait for Longhorn volume to be ready for workload
+                    # Use remaining timeout (same as PVC bind timeout)
+                    remaining_timeout = timeout - elapsed
+                    lh_start = time.time()
+                    while time.time() - lh_start < remaining_timeout:
+                        if is_longhorn_volume_ready(pvc.spec.volume_name):
+                            lh_elapsed = int(time.time() - lh_start)
+                            log_msg(f"✅ Longhorn volume ready (attached+healthy) after {lh_elapsed}s")
+
+                            # Additional wait for Longhorn CSI workload readiness
+                            # Even after state=attached+healthy, CSI needs extra time to make volume
+                            # available for pod attachment (typically 10-15s for cloned volumes)
+                            log_msg("⏳ Waiting additional 15s for Longhorn CSI workload readiness...")
+                            time.sleep(15)
+                            log_msg("✅ Longhorn volume should now be ready for workload attachment")
+                            break
+                        time.sleep(2)
+                    else:
+                        log_msg(f"⚠️  Longhorn volume not ready after {int(time.time() - lh_start)}s, proceeding anyway")
+
                 return True, ""
 
             # Check if WaitForFirstConsumer (ready to be used by pod)
@@ -544,44 +655,48 @@ def stream_pod_logs(
         stop_event: Threading event to signal when to stop streaming
     """
     try:
-        # Wait for CONTAINER to be running (not just pod phase!)
-        max_wait = 60
-        start_time = time.time()
-
-        while time.time() - start_time < max_wait:
-            if stop_event.is_set():
-                return
-
+        # Poll until container is ready OR stop_event is set
+        # No hardcoded timeout - main thread sets stop_event when pod completes
+        while not stop_event.is_set():
             try:
                 pod = v1.read_namespaced_pod(pod_name, namespace)
 
                 # Check container status (not just pod phase)
                 if pod.status.container_statuses:
                     for container in pod.status.container_statuses:
+                        # Container running - ready to stream!
                         if container.state.running and container.state.running.started_at:
-                            # Container running! Logs guaranteed available!
-                            # Break out of both loops
+                            break
+
+                        # Container terminated (succeeded/failed) - need fallback
+                        if container.state.terminated:
                             break
                     else:
-                        # Continue if no running container found
-                        time.sleep(1)
+                        # No container ready yet, keep polling
+                        time.sleep(2)
                         continue
-                    # Container found running, break outer loop
+
+                    # Found container in ready state, break outer loop
                     break
             except ApiException:
                 pass
 
-            time.sleep(1)
+            time.sleep(2)
 
-        # NOW use follow=True - will stream until pod completes
+        # If stop_event was set before container ready, exit
+        if stop_event.is_set():
+            return
+
+        # Try streaming logs with follow=True
         try:
             log_stream = v1.read_namespaced_pod_log(
                 pod_name,
                 namespace,
-                follow=True,  # Safe now - container is running
+                follow=True,  # Always try follow first
                 _preload_content=False
             )
 
+            # Stream logs line by line
             for line in log_stream:
                 if stop_event.is_set():
                     break
@@ -590,10 +705,24 @@ def stream_pod_logs(
                     print(f"[{pod_name}] {line_str}", flush=True)
 
         except ApiException as exc:
-            # Only log if actually an error (not normal stop)
-            if not stop_event.is_set():
-                reason = exc.reason if hasattr(exc, 'reason') else exc
-                log_msg(f"⚠️  Log streaming ended for {pod_name}: {reason}")
+            # Handle "Bad Request" - likely pod completed before streaming started
+            if hasattr(exc, 'status') and exc.status == 400:
+                # Fallback: Read all logs without follow
+                try:
+                    logs = v1.read_namespaced_pod_log(pod_name, namespace)
+                    if logs:
+                        for line in logs.split('\n'):
+                            if line.strip():
+                                print(f"[{pod_name}] {line}", flush=True)
+                except ApiException:
+                    # Even fallback failed - just log warning
+                    if not stop_event.is_set():
+                        log_msg(f"⚠️  Could not retrieve logs for {pod_name}")
+            else:
+                # Other error - log it
+                if not stop_event.is_set():
+                    reason = exc.reason if hasattr(exc, 'reason') else exc
+                    log_msg(f"⚠️  Log streaming ended for {pod_name}: {reason}")
 
     except Exception as exc:
         log_msg(f"⚠️  Error streaming logs for {pod_name}: {exc}")
