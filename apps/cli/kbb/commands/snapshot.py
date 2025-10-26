@@ -111,6 +111,12 @@ def restore_snapshot(args: argparse.Namespace) -> None:
         config = find_app_config(args.namespace, args.app, args.release, config_type='snapshot')
         restore_config = config.get('restore', {})
 
+        # Extract image config for rsync pod
+        pod_config = config.get('pod', {})
+        default_repo = 'ghcr.io/frederikb96/kube-borg-backup/backup-runner'
+        image_repository = pod_config.get('image', {}).get('repository', default_repo)
+        image_tag = pod_config.get('image', {}).get('tag', 'latest')
+
         # Step 2: Execute pre-hooks (fail-fast)
         pre_hooks = restore_config.get('preHooks', [])
         if pre_hooks:
@@ -175,7 +181,9 @@ def restore_snapshot(args: argparse.Namespace) -> None:
                 namespace=args.namespace,
                 source_pvc_name=clone_pvc_name,
                 target_pvc_name=target_pvc,
-                timeout=120  # CRITICAL: Never wait longer than 120s
+                timeout=120,  # CRITICAL: Never wait longer than 120s
+                image_repository=image_repository,
+                image_tag=image_tag
             )
             if not rsync_result['success']:
                 raise Exception(f"Rsync failed: {rsync_result['logs']}")

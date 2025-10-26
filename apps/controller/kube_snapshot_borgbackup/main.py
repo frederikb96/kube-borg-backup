@@ -203,6 +203,15 @@ def is_longhorn_volume_ready(pv_name: str) -> bool:
     Returns:
         True if status.state="attached" AND status.robustness="healthy"
     """
+    # NOTE: longhorn-system namespace is hardcoded intentionally
+    # Longhorn ALWAYS installs to this namespace (Longhorn convention, not user-configurable)
+    # This check is Longhorn-specific and only runs when is_longhorn_volume() detects Longhorn CSI
+    # Other CSI drivers (Ceph, ZFS, AWS EBS, etc.) skip this check entirely
+    #
+    # Why this is needed: Longhorn has a timing issue where clone PVCs from VolumeSnapshots
+    # report status.phase=Bound (Kubernetes level) but the underlying Longhorn volume isn't
+    # actually ready for pod attachment yet. Checking the Longhorn CRD gives a reliable signal.
+    # Without this check, pods fail with "volume is not ready for workloads" errors.
     try:
         custom_api = client.CustomObjectsApi()
 
@@ -210,7 +219,7 @@ def is_longhorn_volume_ready(pv_name: str) -> bool:
         lh_volume = custom_api.get_namespaced_custom_object(
             group="longhorn.io",
             version="v1beta2",
-            namespace="longhorn-system",
+            namespace="longhorn-system",  # Longhorn convention - always installs here
             plural="volumes",
             name=pv_name
         )

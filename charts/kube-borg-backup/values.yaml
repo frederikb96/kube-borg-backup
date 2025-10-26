@@ -21,6 +21,13 @@ snapshot:
     tag: latest
     pullPolicy: Always
 
+  # Image for rsync helper pods (snapshot restore operations)
+  pod:
+    image:
+      repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
+      tag: latest
+      pullPolicy: IfNotPresent
+
   # CronJob schedule configuration
   cron:
     # When to run snapshots (cron format)

@@ -28,6 +28,13 @@ def list_borg_archives(args: argparse.Namespace) -> None:
         # Load config
         config = find_app_config(args.namespace, args.app, args.release, config_type='borg')
 
+        # Extract image config from pod section (with fallback for backward compatibility)
+        pod_config = config.get('pod', {})
+        default_repo = 'ghcr.io/frederikb96/kube-borg-backup/backup-runner'
+        image_repository = pod_config.get('image', {}).get('repository', default_repo)
+        image_tag = pod_config.get('image', {}).get('tag', 'latest')
+        image = f"{image_repository}:{image_tag}"
+
         # Extract borg config for pod
         borg_config = {
             'borgRepo': config.get('borgRepo'),
@@ -69,7 +76,7 @@ def list_borg_archives(args: argparse.Namespace) -> None:
                 containers=[
                     client.V1Container(
                         name='borg-list',
-                        image='ghcr.io/frederikb96/kube-borg-backup/backup-runner:dev',
+                        image=image,
                         command=['python3', '/app/list.py'],
                         image_pull_policy='Always',
                         volume_mounts=[
@@ -245,6 +252,13 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
         config = find_app_config(args.namespace, args.app, args.release, config_type='borg')
         restore_config = config.get('restore', {})
 
+        # Extract image config from pod section (with fallback for backward compatibility)
+        pod_config = config.get('pod', {})
+        default_repo = 'ghcr.io/frederikb96/kube-borg-backup/backup-runner'
+        image_repository = pod_config.get('image', {}).get('repository', default_repo)
+        image_tag = pod_config.get('image', {}).get('tag', 'latest')
+        image = f"{image_repository}:{image_tag}"
+
         # Step 2: Execute pre-hooks (fail-fast)
         pre_hooks = restore_config.get('preHooks', [])
         if pre_hooks:
@@ -311,7 +325,7 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
                 containers=[
                     client.V1Container(
                         name='borg-restore',
-                        image='ghcr.io/frederikb96/kube-borg-backup/backup-runner:dev',
+                        image=image,
                         command=['python3', '/app/restore.py'],
                         image_pull_policy='Always',
                         security_context=client.V1SecurityContext(privileged=True),  # FUSE needs privileged
@@ -367,7 +381,7 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
                 time.sleep(2)
             else:
                 # Timeout after 120s
-                raise Exception(f"Restore pod timeout after 120s")
+                raise Exception("Restore pod timeout after 120s")
 
         except Exception as e:
             print(f"Restore failed: {e}", file=sys.stderr)

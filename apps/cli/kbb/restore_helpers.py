@@ -100,16 +100,17 @@ def spawn_rsync_pod(
     source_pvc_name: str,
     target_pvc_name: str,
     pod_name: str | None = None,
-    timeout: int = 300
+    timeout: int = 300,
+    image_repository: str = 'ghcr.io/frederikb96/kube-borg-backup/backup-runner',
+    image_tag: str = 'latest'
 ) -> dict[str, Any]:
     """Spawn rsync pod to copy data from source PVC to target PVC.
 
-    Creates an ephemeral alpine pod that:
-    1. Installs rsync
-    2. Mounts source PVC read-only at /source
-    3. Mounts target PVC read-write at /target
-    4. Runs rsync --delete to sync data
-    5. Self-terminates on completion
+    Creates an ephemeral backup-runner pod that:
+    1. Mounts source PVC read-only at /source
+    2. Mounts target PVC read-write at /target
+    3. Runs rsync --delete to sync data
+    4. Self-terminates on completion
 
     Args:
         namespace: Kubernetes namespace
@@ -117,6 +118,8 @@ def spawn_rsync_pod(
         target_pvc_name: Target PVC name (destination)
         pod_name: Optional pod name (auto-generated if not provided)
         timeout: Pod completion timeout in seconds (default: 300)
+        image_repository: Container image repository (default: backup-runner)
+        image_tag: Container image tag (default: latest)
 
     Returns:
         Dict with:
@@ -145,9 +148,9 @@ def spawn_rsync_pod(
             containers=[
                 client.V1Container(
                     name="rsync",
-                    image="alpine:latest",
+                    image=f"{image_repository}:{image_tag}",
                     command=["/bin/sh", "-c"],
-                    args=["apk add --no-cache rsync && rsync -av --delete /source/ /target/"],
+                    args=["rsync -av --delete /source/ /target/"],
                     volume_mounts=[
                         client.V1VolumeMount(name="source", mount_path="/source", read_only=True),
                         client.V1VolumeMount(name="target", mount_path="/target")

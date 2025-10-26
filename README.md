@@ -28,6 +28,7 @@ Developed specifically to solve the problem of backing up complex Kubernetes app
   - For snapshot functionality
   - Examples: Longhorn, Ceph RBD, ZFS, AWS EBS CSI, etc.
   - Storage class must support CSI snapshots (creates `VolumeSnapshot` resources)
+  - **Longhorn users:** Enhanced readiness detection automatically handles clone PVC timing issues
 - **Storage class with snapshot cloning support**
   - For backup functionality (creates clone PVCs from snapshots)
   - Clone PVCs must be creatable via `dataSource: VolumeSnapshot`
