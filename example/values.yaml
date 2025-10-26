@@ -86,6 +86,14 @@ borgbackup:
     yearly: 1
 
 ## =============================================================================
+## Restore Configuration (v6.0.0+)
+## =============================================================================
+restore:
+  # RBAC extensions for restore operations
+  rbac:
+    additionalRules: []
+
+## =============================================================================
 ## Applications
 ## =============================================================================
 apps:
@@ -211,3 +219,38 @@ apps:
           # Shorter timeout for small cache
           timeout: 1800  # 30 minutes
           cloneBindTimeout: 180
+
+    # ==========================================================================
+    # Restore Configuration for Immich (v6.0.0+)
+    # ==========================================================================
+    # Pre/post hooks executed during restore operations
+    restore:
+      # Pre-restore hooks: Scale down Immich components BEFORE restore
+      # This prevents write conflicts during restore operation
+      # Parallel execution for faster scale-down (all components stop simultaneously)
+      preHooks:
+        - type: scale
+          deployment: immich-server
+          replicas: 0
+          parallel: true
+        - type: scale
+          deployment: immich-microservices
+          replicas: 0
+          parallel: true
+        - type: scale
+          deployment: immich-machine-learning
+          replicas: 0
+          parallel: true
+
+      # Post-restore hooks: Scale up Immich components AFTER restore
+      # Sequential execution ensures proper startup order (database first, then services)
+      postHooks:
+        - type: scale
+          deployment: immich-server
+          replicas: 1
+        - type: scale
+          deployment: immich-microservices
+          replicas: 1
+        - type: scale
+          deployment: immich-machine-learning
+          replicas: 1

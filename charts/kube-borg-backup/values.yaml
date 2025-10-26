@@ -182,3 +182,94 @@ apps:
           class: longhorn
           timeout: 1800
           cloneBindTimeout: 300
+
+    # Optional: Restore hooks for this app (v6.0.0+)
+    # Pre/post hooks executed during restore operations
+    restore:
+      # Pre-restore hooks - executed BEFORE restore operation starts
+      # Behavior:
+      # - Executed sequentially in order defined
+      # - FAIL-FAST: If ANY hook fails, entire restore is aborted
+      # - Use for critical safety operations (scale down deployments, quiesce databases)
+      # - Hooks are executed in parallel if grouped with 'parallel: true'
+      #
+      # Hook types:
+      # 1. scale: Scale Deployment/StatefulSet replicas
+      #    - type: scale
+      #      deployment: myapp           # Deployment name (mutually exclusive with statefulset)
+      #      statefulset: myapp-sts      # StatefulSet name (mutually exclusive with deployment)
+      #      replicas: 0                 # Target replica count
+      #      parallel: true              # Optional: Execute in parallel with other parallel hooks
+      #
+      # 2. exec: Execute command in pod
+      #    - type: exec
+      #      pod: postgres-0             # Pod name
+      #      container: postgres         # Optional: Container name (required if pod has multiple containers)
+      #      command: ["pg_dump", "-Fc", "/backup/dump.sql"]
+      #      parallel: false             # Optional: Execute in parallel with other parallel hooks
+      #
+      # Common use cases:
+      # - Scale down application deployments to prevent write conflicts
+      # - Stop database write activity (set read-only mode)
+      # - Flush application caches to disk
+      # - Create pre-restore database dump for safety
+      #
+      # Example: Scale down application components before restore
+      # preHooks:
+      #   - type: scale
+      #     deployment: myapp-server
+      #     replicas: 0
+      #   - type: scale
+      #     deployment: myapp-worker
+      #     replicas: 0
+      #
+      # Example: Parallel execution for faster scale-down
+      # preHooks:
+      #   - type: scale
+      #     deployment: myapp-server
+      #     replicas: 0
+      #     parallel: true
+      #   - type: scale
+      #     deployment: myapp-worker
+      #     replicas: 0
+      #     parallel: true
+      preHooks: []
+      #  - type: scale
+      #    deployment: myapp
+      #    replicas: 0
+
+      # Post-restore hooks - executed AFTER restore operation completes
+      # Behavior:
+      # - Executed sequentially in order defined
+      # - BEST-EFFORT: Warnings only, restore completes even if hooks fail
+      # - Use for non-critical cleanup operations (scale up deployments, notifications)
+      # - Hooks are executed in parallel if grouped with 'parallel: true'
+      #
+      # Hook types: Same as preHooks (scale, exec)
+      #
+      # Common use cases:
+      # - Scale application deployments back up
+      # - Restart services with restored data
+      # - Run database integrity checks
+      # - Send notifications (success/failure)
+      # - Trigger application initialization routines
+      #
+      # Example: Scale up application components after restore
+      # postHooks:
+      #   - type: scale
+      #     deployment: myapp-server
+      #     replicas: 1
+      #   - type: scale
+      #     deployment: myapp-worker
+      #     replicas: 1
+      #
+      # Example: Database integrity check after restore
+      # postHooks:
+      #   - type: exec
+      #     pod: postgres-0
+      #     container: postgres
+      #     command: ["/bin/bash", "-c", "psql -U postgres -c 'VACUUM ANALYZE;'"]
+      postHooks: []
+      #  - type: scale
+      #    deployment: myapp
+      #    replicas: 2
