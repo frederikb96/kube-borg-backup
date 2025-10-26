@@ -1,6 +1,7 @@
 """Helper functions for restore operations."""
 
 import sys
+import time
 from typing import Any
 from kubernetes import client
 from kbb.utils import load_kube_client
@@ -92,3 +93,145 @@ def create_clone_pvc(
         "binding_mode": binding_mode,
         "status": created_pvc.status.phase
     }
+
+
+def spawn_rsync_pod(
+    namespace: str,
+    source_pvc_name: str,
+    target_pvc_name: str,
+    pod_name: str | None = None,
+    timeout: int = 300
+) -> dict[str, Any]:
+    """Spawn rsync pod to copy data from source PVC to target PVC.
+
+    Creates an ephemeral alpine pod that:
+    1. Installs rsync
+    2. Mounts source PVC read-only at /source
+    3. Mounts target PVC read-write at /target
+    4. Runs rsync --delete to sync data
+    5. Self-terminates on completion
+
+    Args:
+        namespace: Kubernetes namespace
+        source_pvc_name: Source PVC name (clone from snapshot)
+        target_pvc_name: Target PVC name (destination)
+        pod_name: Optional pod name (auto-generated if not provided)
+        timeout: Pod completion timeout in seconds (default: 300)
+
+    Returns:
+        Dict with:
+            - success: bool
+            - pod_name: Pod name used
+            - logs: Pod logs (for debugging)
+
+    Raises:
+        Exception: If pod fails or times out
+    """
+    v1, _ = load_kube_client()
+
+    # Generate pod name if not provided
+    if not pod_name:
+        pod_name = f"rsync-{int(time.time())}"
+
+    # Create pod spec with privileged mode to bypass filesystem permissions
+    # (clone PVCs may have restrictive ownership like postgres 70:70 with mode 0700)
+    pod = client.V1Pod(
+        metadata=client.V1ObjectMeta(
+            name=pod_name,
+            namespace=namespace,
+            labels={"app": "kube-borg-backup", "operation": "rsync"}
+        ),
+        spec=client.V1PodSpec(
+            containers=[
+                client.V1Container(
+                    name="rsync",
+                    image="alpine:latest",
+                    command=["/bin/sh", "-c"],
+                    args=["apk add --no-cache rsync && rsync -av --delete /source/ /target/"],
+                    volume_mounts=[
+                        client.V1VolumeMount(name="source", mount_path="/source", read_only=True),
+                        client.V1VolumeMount(name="target", mount_path="/target")
+                    ],
+                    security_context=client.V1SecurityContext(privileged=True)
+                )
+            ],
+            volumes=[
+                client.V1Volume(
+                    name="source",
+                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                        claim_name=source_pvc_name,
+                        read_only=True
+                    )
+                ),
+                client.V1Volume(
+                    name="target",
+                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                        claim_name=target_pvc_name
+                    )
+                )
+            ],
+            restart_policy="Never"
+        )
+    )
+
+    # Create pod
+    try:
+        v1.create_namespaced_pod(namespace, pod)
+        print(f"Rsync pod '{pod_name}' created in namespace '{namespace}'")
+    except client.exceptions.ApiException as e:
+        print(f"Error creating rsync pod '{pod_name}': {e}", file=sys.stderr)
+        raise
+
+    # Wait for completion with timeout
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            pod_status = v1.read_namespaced_pod_status(pod_name, namespace)
+            phase = pod_status.status.phase
+
+            if phase == "Succeeded":
+                # Get logs before cleanup
+                logs = v1.read_namespaced_pod_log(pod_name, namespace)
+                print(f"Rsync pod '{pod_name}' completed successfully")
+
+                # Cleanup pod
+                try:
+                    v1.delete_namespaced_pod(pod_name, namespace)
+                    print(f"Rsync pod '{pod_name}' deleted")
+                except client.exceptions.ApiException:
+                    pass  # Ignore deletion errors
+
+                return {"success": True, "pod_name": pod_name, "logs": logs}
+
+            elif phase == "Failed":
+                # Get logs before cleanup
+                try:
+                    logs = v1.read_namespaced_pod_log(pod_name, namespace)
+                except client.exceptions.ApiException:
+                    logs = "Could not retrieve pod logs"
+
+                # Cleanup pod
+                try:
+                    v1.delete_namespaced_pod(pod_name, namespace)
+                except client.exceptions.ApiException:
+                    pass  # Ignore deletion errors
+
+                raise Exception(f"Rsync pod '{pod_name}' failed:\n{logs}")
+
+        except client.exceptions.ApiException as e:
+            print(f"Error checking pod status: {e}", file=sys.stderr)
+
+        time.sleep(2)
+
+    # Timeout - get logs and cleanup
+    try:
+        logs = v1.read_namespaced_pod_log(pod_name, namespace)
+    except client.exceptions.ApiException:
+        logs = "Could not retrieve pod logs"
+
+    try:
+        v1.delete_namespaced_pod(pod_name, namespace)
+    except client.exceptions.ApiException:
+        pass  # Ignore deletion errors
+
+    raise Exception(f"Rsync pod '{pod_name}' timeout after {timeout}s:\n{logs}")
