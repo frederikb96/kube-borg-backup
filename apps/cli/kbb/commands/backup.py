@@ -224,9 +224,198 @@ def cleanup_list_resources(v1: client.CoreV1Api, namespace: str, pod_name: str, 
 
 
 def restore_borg_archive(args: argparse.Namespace) -> None:
-    """Restore from borg archive."""
-    print(f"[STUB] Restoring archive '{args.archive_id}' for app '{args.app}'")
-    if args.pvc:
-        print(f"Target PVC override: {args.pvc}")
-    print("TODO: Implement borg restore workflow")
-    # Implementation in Phase 10+
+    """Restore from borg archive with FUSE mount.
+
+    Full workflow:
+    1. Load config and restore hooks
+    2. Execute pre-hooks (fail-fast)
+    3. Determine target PVC (explicit or first backup PVC)
+    4. Create ephemeral config Secret
+    5. Spawn borg-restore pod (120s max)
+    6. Execute post-hooks (best-effort)
+    7. Cleanup pod + secret
+
+    Args:
+        args: CLI arguments with namespace, app, release, archive_id, optional pvc
+    """
+    from kbb.hooks import execute_hooks
+
+    try:
+        # Step 1: Load config
+        config = find_app_config(args.namespace, args.app, args.release, config_type='borg')
+        restore_config = config.get('restore', {})
+
+        # Step 2: Execute pre-hooks (fail-fast)
+        pre_hooks = restore_config.get('preHooks', [])
+        if pre_hooks:
+            print("Executing pre-hooks...")
+            v1, _ = load_kube_client()
+            api_client = v1.api_client
+            result = execute_hooks(api_client, args.namespace, pre_hooks, mode='pre')
+            if not result['success']:
+                print(f"Pre-hooks failed: {result['failed']}", file=sys.stderr)
+                sys.exit(1)
+            print("Pre-hooks completed successfully")
+
+        # Step 3: Determine target PVC
+        v1, _ = load_kube_client()
+
+        if args.pvc:
+            target_pvc = args.pvc
+        else:
+            # Use first backup's PVC name from config
+            backups = config.get('backups', [])
+            if not backups:
+                print("Error: No backups configured in config", file=sys.stderr)
+                sys.exit(1)
+            target_pvc = backups[0]['pvc']
+
+        print(f"Target PVC: {target_pvc}")
+
+        # Step 4: Create ephemeral config Secret
+        secret_name = f"kbb-{args.app}-restore-{int(time.time())}"
+
+        restore_config_data = {
+            'borgRepo': config['borgRepo'],
+            'borgPassphrase': config['borgPassphrase'],
+            'sshPrivateKey': config['sshPrivateKey'],
+            'archiveName': args.archive_id,
+            'targetPath': '/target'  # Standard rsync target
+        }
+
+        secret = client.V1Secret(
+            metadata=client.V1ObjectMeta(name=secret_name, namespace=args.namespace),
+            string_data={'config.yaml': yaml.dump(restore_config_data)}
+        )
+
+        try:
+            v1.create_namespaced_secret(args.namespace, secret)
+            print(f"Created ephemeral config Secret: {secret_name}")
+        except client.exceptions.ApiException as e:
+            print(f"Error creating config Secret: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        # Step 5: Spawn borg-restore pod (120s timeout)
+        pod_name = f"kbb-{args.app}-restore-{int(time.time())}"
+
+        # Get cache PVC name
+        cache_pvc = config.get('cachePVC', f"kbb-{args.app}-borg-cache")
+
+        pod = client.V1Pod(
+            metadata=client.V1ObjectMeta(
+                name=pod_name,
+                namespace=args.namespace,
+                labels={'app': 'kube-borg-backup', 'operation': 'restore'}
+            ),
+            spec=client.V1PodSpec(
+                containers=[
+                    client.V1Container(
+                        name='borg-restore',
+                        image='ghcr.io/frederikb96/kube-borg-backup/backup-runner:dev',
+                        command=['python3', '/app/restore.py'],
+                        image_pull_policy='Always',
+                        security_context=client.V1SecurityContext(privileged=True),  # FUSE needs privileged
+                        volume_mounts=[
+                            client.V1VolumeMount(name='config', mount_path='/config', read_only=True),
+                            client.V1VolumeMount(name='cache', mount_path='/root/.cache/borg'),
+                            client.V1VolumeMount(name='target', mount_path='/target')
+                        ]
+                    )
+                ],
+                volumes=[
+                    client.V1Volume(
+                        name='config',
+                        secret=client.V1SecretVolumeSource(secret_name=secret_name)
+                    ),
+                    client.V1Volume(
+                        name='cache',
+                        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                            claim_name=cache_pvc
+                        )
+                    ),
+                    client.V1Volume(
+                        name='target',
+                        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                            claim_name=target_pvc
+                        )
+                    )
+                ],
+                restart_policy='Never'
+            )
+        )
+
+        try:
+            v1.create_namespaced_pod(args.namespace, pod)
+            print(f"Borg restore pod '{pod_name}' created")
+
+            # Wait for completion (120s max)
+            start_time = time.time()
+            while time.time() - start_time < 120:
+                pod_status = v1.read_namespaced_pod_status(pod_name, args.namespace)
+                phase = pod_status.status.phase
+
+                if phase == 'Succeeded':
+                    # Get logs
+                    logs = v1.read_namespaced_pod_log(pod_name, args.namespace)
+                    print("Restore completed successfully")
+                    print(f"Logs:\n{logs}")
+                    break
+                elif phase == 'Failed':
+                    logs = v1.read_namespaced_pod_log(pod_name, args.namespace)
+                    raise Exception(f"Restore pod failed:\n{logs}")
+
+                time.sleep(2)
+            else:
+                # Timeout after 120s
+                raise Exception(f"Restore pod timeout after 120s")
+
+        except Exception as e:
+            print(f"Restore failed: {e}", file=sys.stderr)
+            # Cleanup
+            _cleanup_restore_resources(v1, args.namespace, pod_name, secret_name)
+            sys.exit(1)
+
+        # Step 6: Execute post-hooks (best-effort)
+        post_hooks = restore_config.get('postHooks', [])
+        if post_hooks:
+            print("Executing post-hooks...")
+            api_client = v1.api_client
+            result = execute_hooks(api_client, args.namespace, post_hooks, mode='post')
+            if not result['success']:
+                print(f"Warning: Some post-hooks failed: {result['failed']}", file=sys.stderr)
+            else:
+                print("Post-hooks completed successfully")
+
+        # Step 7: Cleanup pod + secret
+        _cleanup_restore_resources(v1, args.namespace, pod_name, secret_name)
+
+        print(f"\n✅ Restore complete: archive '{args.archive_id}' → PVC '{target_pvc}'")
+
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cleanup_restore_resources(v1: client.CoreV1Api, namespace: str, pod_name: str, secret_name: str) -> None:
+    """Delete restore pod and secret, ignore errors.
+
+    Args:
+        v1: Kubernetes CoreV1Api instance
+        namespace: Namespace of the resources
+        pod_name: Pod name to delete
+        secret_name: Secret name to delete
+    """
+    try:
+        v1.delete_namespaced_pod(pod_name, namespace)
+        print(f"Cleaned up restore pod: {pod_name}")
+    except Exception:
+        pass  # Ignore cleanup errors
+
+    try:
+        v1.delete_namespaced_secret(secret_name, namespace)
+        print(f"Cleaned up restore secret: {secret_name}")
+    except Exception:
+        pass  # Ignore cleanup errors
