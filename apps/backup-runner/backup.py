@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Borgbackup backup-runner container - Python rewrite of run.sh.
+"""Borgbackup backup operation.
 
-This script orchestrates BorgBackup operations:
+This script orchestrates BorgBackup backup operations:
 1. Reads configuration from mounted config file
 2. Sets up SSH authentication
 3. Creates backup archive (directly, no pre-check)
@@ -20,9 +20,8 @@ import subprocess
 import sys
 import time
 from datetime import datetime, UTC
-from pathlib import Path
 
-import yaml
+from common import load_config, setup_ssh_key, get_borg_env, init_borg_repo
 
 # Configure logging
 logging.basicConfig(
@@ -39,7 +38,7 @@ _borg_repo: str | None = None
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Borgbackup backup-runner container")
+    parser = argparse.ArgumentParser(description="Borgbackup backup operation")
     parser.add_argument(
         "-c", "--config",
         default="/config/config.yaml",
@@ -48,163 +47,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_config(config_path: str) -> dict:
-    """Load and validate configuration from YAML file.
+def validate_backup_config(config: dict) -> None:
+    """Validate backup-specific required fields.
 
     Args:
-        config_path: Path to configuration file
-
-    Returns:
-        Configuration dictionary
+        config: Configuration dictionary
 
     Raises:
-        SystemExit: If config file not found or invalid
+        SystemExit: If backup-specific fields are missing
     """
-    path = Path(config_path)
-
-    if not path.exists():
-        logger.error(f"Config file not found: {config_path}")
-        sys.exit(1)
-
-    try:
-        with path.open('r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-    except Exception as exc:
-        logger.error(f"Failed to parse config file: {exc}")
-        sys.exit(1)
-
-    # Validate required fields
-    required = ['borgRepo', 'borgPassphrase', 'sshPrivateKey', 'prefix', 'backupDir', 'lockWait']
+    required = ['prefix', 'backupDir', 'lockWait']
     missing = [field for field in required if field not in config]
     if missing:
-        logger.error(f"Config missing required fields: {', '.join(missing)}")
-        sys.exit(1)
-
-    return config
-
-
-def setup_ssh_key(ssh_key_content: str) -> str:
-    """Write SSH private key to file and set permissions.
-
-    Args:
-        ssh_key_content: SSH private key as string
-
-    Returns:
-        Path to SSH key file
-
-    Raises:
-        SystemExit: If SSH key setup fails
-    """
-    ssh_dir = Path("/root/.ssh")
-    ssh_key_file = ssh_dir / "borg-ssh.key"
-
-    try:
-        # Create .ssh directory
-        ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-        # Write SSH key
-        ssh_key_file.write_text(ssh_key_content, encoding='utf-8')
-        ssh_key_file.chmod(0o600)
-
-        logger.info(f"SSH key written to {ssh_key_file}")
-        logger.info(f"SSH key file size: {ssh_key_file.stat().st_size} bytes")
-
-        return str(ssh_key_file)
-
-    except Exception as exc:
-        logger.error(f"Failed to setup SSH key: {exc}")
-        sys.exit(1)
-
-
-def check_repo_status(borg_repo: str, borg_passphrase: str, borg_rsh: str) -> bool:
-    """Check repository status and initialize if needed.
-
-    Uses 'borg info' to check if repository is ready. Handles three scenarios:
-    1. Exit 0 -> Repository ready
-    2. Exit 2 + "is not a valid repository" -> Initialize repository
-    3. Exit 2 + "Failed to create/acquire the lock" -> Repository locked (proceed anyway)
-    4. Any other error -> Fail
-
-    Args:
-        borg_repo: Borg repository URL
-        borg_passphrase: Repository passphrase
-        borg_rsh: SSH command for Borg
-
-    Returns:
-        True if repository is ready
-
-    Raises:
-        SystemExit: If repository check fails unexpectedly
-    """
-    env = os.environ.copy()
-    env['BORG_REPO'] = borg_repo
-    env['BORG_PASSPHRASE'] = borg_passphrase
-    env['BORG_RSH'] = borg_rsh
-
-    logger.info("Checking repository status with 'borg info'...")
-
-    try:
-        result = subprocess.run(
-            ['borg', 'info', borg_repo],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
-
-        # Success - repository ready
-        if result.returncode == 0:
-            logger.info("Repository ready")
-            return True
-
-        # Exit 2 - check error message
-        if result.returncode == 2:
-            output = result.stderr + result.stdout
-
-            # Repository not initialized
-            if "is not a valid repository" in output:
-                logger.info("Repository not initialized, initializing...")
-                try:
-                    init_result = subprocess.run(
-                        ['borg', 'init', '--encryption', 'repokey-blake2', borg_repo],
-                        env=env,
-                        capture_output=True,
-                        text=True,
-                        timeout=60
-                    )
-
-                    if init_result.returncode != 0:
-                        logger.error(f"Failed to initialize repository: {init_result.stderr}")
-                        sys.exit(1)
-
-                    logger.info("Repository initialized successfully")
-                    return True
-
-                except Exception as exc:
-                    logger.error(f"Failed to initialize repository: {exc}")
-                    sys.exit(1)
-
-            # Repository locked - proceed anyway (borg create will wait)
-            elif "Failed to create/acquire the lock" in output:
-                logger.info("Repository locked, will wait during backup")
-                return True
-
-            # Other exit 2 error - fail
-            else:
-                logger.error("Unexpected borg info failure (exit 2):")
-                logger.error(output)
-                sys.exit(1)
-
-        # Any other exit code - fail
-        logger.error(f"borg info failed with exit code {result.returncode}:")
-        logger.error(result.stderr + result.stdout)
-        sys.exit(1)
-
-    except subprocess.TimeoutExpired:
-        logger.error("borg info timed out after 60 seconds")
-        sys.exit(1)
-    except Exception as exc:
-        logger.error(f"Failed to check repository status: {exc}")
+        logger.error(f"Config missing backup-specific fields: {', '.join(missing)}")
         sys.exit(1)
 
 
@@ -277,9 +132,11 @@ def run_backup(config: dict) -> int:
     """
     global _borg_process, _borg_repo
 
+    # Validate backup-specific fields
+    validate_backup_config(config)
+
     # Extract config
     borg_repo = config['borgRepo']
-    borg_passphrase = config['borgPassphrase']
     prefix = config['prefix']
     backup_dir = config['backupDir']
     lock_wait = config['lockWait']
@@ -287,18 +144,9 @@ def run_backup(config: dict) -> int:
 
     _borg_repo = borg_repo
 
-    # Setup SSH key
+    # Setup SSH and environment using common functions
     ssh_key_file = setup_ssh_key(config['sshPrivateKey'])
-
-    # Build BORG_RSH with required SSH flags
-    borg_rsh = f"ssh -o IdentityFile={ssh_key_file} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no"
-
-    # Setup environment
-    env = os.environ.copy()
-    env['BORG_REPO'] = borg_repo
-    env['BORG_PASSPHRASE'] = borg_passphrase
-    env['BORG_RSH'] = borg_rsh
-    env['BORG_CACHE_DIR'] = '/cache'  # Cache mounted at /cache by Kubernetes
+    env = get_borg_env(config, ssh_key_file)
 
     logger.info(f"Starting backup: {prefix}")
     logger.info(f"Lock wait timeout: {lock_wait}s")
@@ -341,7 +189,7 @@ def run_backup(config: dict) -> int:
         # If exit code 2, check repo status and retry
         if exit_code == 2:
             logger.info("Borg create failed with exit code 2, checking repository status...")
-            check_repo_status(borg_repo, borg_passphrase, borg_rsh)
+            init_borg_repo(config, env)
 
             # Retry borg create after repo check/init
             logger.info("Retrying backup after repository check...")
