@@ -7,24 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.0.5] - 2025-10-26
+## [5.0.6] - 2025-10-26
 
 ### Added
 
-- **Dual-Thread Real-Time Streaming** (controller v5.0.5)
+- **Dual-Thread Real-Time Streaming** (controller v5.0.6)
   - Implemented concurrent log and event streaming for borg backup pods
   - Logs stream with `[pod-name]` prefix, events with `[EVENT]` prefix
   - Real-time visibility into pod execution, image pulls, volume attachment, container lifecycle
 
 ### Fixed
 
-- **Log Streaming "Bad Request" Errors** (controller v5.0.5)
+- **Log Streaming "Bad Request" Errors** (controller v5.0.6)
   - Fixed premature log streaming that occurred before container logs were ready
   - Now waits for `container.state.running.started_at` before streaming
   - Single `follow=True` call captures complete log output from start to finish
   - Eliminated HTTP 400 errors and log loss on fast-completing pods
 
-- **Event Streaming Duplicates** (controller v5.0.5)
+- **Event Streaming Duplicates** (controller v5.0.6)
   - Fixed duplicate events replaying after 60-second watch timeout
   - Implemented `resourceVersion` tracking across reconnections
   - Events now stream continuously without duplicates
@@ -32,10 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Improved
 
-- **Clean Output Format** (controller v5.0.5)
+- **Clean Output Format** (controller v5.0.6)
   - Removed verbose "waiting for logs" and "reconnecting" messages
   - Professional, production-ready log format
   - Clean interleaved event and log streams
+
+## [5.0.5] - 2025-10-26
+
+### Note
+- Version-only release (no code changes) - actual streaming implementation released in v5.0.6
 
 ## [5.0.4] - 2025-10-25
 
