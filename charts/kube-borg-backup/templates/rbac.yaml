@@ -53,9 +53,11 @@ metadata:
   labels:
     {{- include "kube-borg-backup.labels" $ | nindent 4 }}
 rules:
+  # Snapshot API - for snapshot operations
   - apiGroups: ["snapshot.storage.k8s.io"]
     resources: ["volumesnapshots"]
     verbs: ["create","get","list","delete","patch","watch"]
+  # Core API - for PVCs, pods, secrets, events
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["create","get","list","delete","patch","watch"]
@@ -68,6 +70,22 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get","list","watch"]
+  # Apps API - for scale operations during restore
+  - apiGroups: ["apps"]
+    resources: ["deployments","statefulsets","replicasets","daemonsets"]
+    verbs: ["get","list","patch"]
+  # Batch API - for future in-cluster restore mode
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create","get","list","delete"]
+{{- if $.Values.restore }}
+{{- if $.Values.restore.rbac }}
+{{- if $.Values.restore.rbac.additionalRules }}
+  # User-defined additional rules for custom restore hooks
+{{- toYaml $.Values.restore.rbac.additionalRules | nindent 2 }}
+{{- end }}
+{{- end }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

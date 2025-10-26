@@ -91,6 +91,39 @@ borgbackup:
     yearly: 1
 
 ## =============================================================================
+## Restore Configuration (v6.0.0+)
+## =============================================================================
+restore:
+  # RBAC extensions for restore operations
+  # Standard permissions (Apps API for scale hooks, Batch API for in-cluster mode)
+  # are included by default. Use additionalRules for custom requirements.
+  rbac:
+    # Additional RBAC rules for custom restore hooks
+    # Use cases:
+    # - Cross-namespace access (not recommended, use per-namespace configs instead)
+    # - Custom resources (e.g., Flux HelmRelease suspend/resume)
+    # - External APIs (e.g., ArgoCD Application sync)
+    #
+    # Example: Flux HelmRelease suspend/resume during restore
+    # additionalRules:
+    #   - apiGroups: ["helm.toolkit.fluxcd.io"]
+    #     resources: ["helmreleases"]
+    #     verbs: ["get", "patch"]
+    #
+    # Example: Custom CRD access
+    # additionalRules:
+    #   - apiGroups: ["example.com"]
+    #     resources: ["customresources"]
+    #     verbs: ["get", "list", "patch"]
+    #
+    # Security considerations:
+    # - These rules are namespace-scoped (same namespace as the app)
+    # - Grant minimum required permissions (principle of least privilege)
+    # - Prefer read-only operations where possible
+    # - Review and audit custom rules regularly
+    additionalRules: []
+
+## =============================================================================
 ## Applications (List of apps to backup)
 ## =============================================================================
 apps:
