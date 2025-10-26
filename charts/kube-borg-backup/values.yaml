@@ -178,7 +178,8 @@ apps:
       pvcs:
         - name: postgres-db
           pvc: postgres-data
-          class: longhorn
+          # Storage class for clone PVC - use WaitForFirstConsumer to avoid binding issues
+          class: longhorn-normal
           timeout: 3600
           cloneBindTimeout: 300
           # Optional: Override borg archive prefix (default: {app-name}-{backup-name})
@@ -186,7 +187,7 @@ apps:
 
         - name: app-data-backup
           pvc: app-data
-          class: longhorn
+          class: longhorn-normal
           timeout: 1800
           cloneBindTimeout: 300
 
