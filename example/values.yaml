@@ -36,6 +36,13 @@ snapshot:
     tag: latest
     pullPolicy: IfNotPresent
 
+  # Image for rsync helper pods (snapshot restore operations)
+  pod:
+    image:
+      repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
+      tag: latest
+      pullPolicy: IfNotPresent
+
   cron:
     schedule: "0 * * * *"
     startingDeadlineSeconds: 60
@@ -191,9 +198,9 @@ apps:
         - name: db
           pvc: immich-db-pvc  # Must match snapshot PVC name
           # Storage class for the CLONE PVC (not the original PVC)
-          # IMPORTANT: Choose a storage class with "Delete" reclaim policy to ensure
-          #            clone PVCs are automatically cleaned up at the storage layer
-          class: longhorn
+          # IMPORTANT: Use storage class with WaitForFirstConsumer binding mode
+          #            and "Delete" reclaim policy for automatic cleanup
+          class: longhorn-normal
           # Timeout for this specific backup (seconds) - controls both:
           # 1. Pod activeDeadlineSeconds: How long the borg pod is allowed to run
           # 2. Borg --lock-wait: How long borg waits for repository lock
@@ -215,7 +222,7 @@ apps:
         # Archive name will be: immich-model-cache-YYYY-MM-DD-HH-MM-SS
         - name: model-cache
           pvc: immich-model-cache-pvc
-          class: longhorn
+          class: longhorn-normal
           # Shorter timeout for small cache
           timeout: 1800  # 30 minutes
           cloneBindTimeout: 180

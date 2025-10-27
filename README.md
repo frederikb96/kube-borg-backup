@@ -71,7 +71,18 @@ EOF
 - **Helm Deployment** - Single chart with separate CronJobs for snapshot and backup operations
 - **Multi-Architecture** - ARM64 and AMD64 support
 
-**Restore functionality** is currently in development.
+## Restore Functionality
+
+Restore operations are fully supported via the `kbb` CLI tool:
+
+- **Snapshot restore:** Clone VolumeSnapshot to new PVC or rsync to existing PVC
+- **Borg archive restore:** Mount borg archive via FUSE and restore to PVC
+- **Pre/post hooks:** Scale deployments, execute commands during restore
+- **Configurable:** Custom image tags, storage classes, resource limits
+
+Install CLI: `pipx install git+https://github.com/frederikb96/kube-borg-backup.git#subdirectory=apps/cli`
+
+See `kbb --help` for full command reference.
 
 ## Quick Start
 

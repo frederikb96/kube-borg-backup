@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0] - TBD
+
+### Added
+
+- **Restore Functionality (Production-Ready)** (CLI v1.0.0)
+  - CLI tool installable via pipx for restore operations
+  - Snapshot restore: Clone VolumeSnapshot to new PVC or rsync to existing PVC
+  - Borg archive restore: FUSE mount support for flexible restore workflows
+  - Pre/post hooks for restore: Scale deployments, execute commands (exec hooks)
+  - Parallel and sequential hook execution modes
+  - Data integrity validation in restore tests (SHA256 checksums)
+  - Configurable image tags read from config Secret (production-ready)
+
+- **Restore Helper Pods** (Helm Chart v6.0.0)
+  - Rsync helper pods for snapshot restore data copy (uses backup-runner image)
+  - FUSE mount pods for borg archive restore
+  - `snapshot.pod.image` configuration for rsync helper pods
+  - Self-contained architecture (no external Alpine image dependency)
+
+- **Test Data Validation** (Testing v6.0.0)
+  - SHA256 checksum validation in all restore tests
+  - Ensures data integrity across restore workflows
+  - See DATA_VALIDATION.md for methodology
+
+### Changed
+
+- **CRITICAL: Removed Timeout Limits from Restore Operations** (CLI v1.0.0)
+  - Restore operations now run indefinitely until completion or manual cancellation
+  - Previous timeouts (120-300s) were blocking large volume restores
+  - Essential for production use with multi-TB volumes
+  - Applies to: snapshot restore, borg restore, all restore hooks
+
+- **Storage Class Alignment** (Helm Chart v6.0.0, Testing v6.0.0)
+  - Aligned clone PVC storage class to `longhorn-normal` (WaitForFirstConsumer)
+  - Updated all test configs and documentation
+  - Follows CLAUDE.md best practices
+
+- **Image Configuration** (Helm Chart v6.0.0, CLI v1.0.0)
+  - CLI reads image tags from config Secret (no hardcoded `:dev` tags)
+  - Added `snapshot.pod.image` to values.yaml defaults
+  - Rsync operations use backup-runner image instead of external Alpine
+  - Configurable via Helm values for production deployments
+
+### Fixed
+
+- **Production-Ready CLI** (CLI v1.0.0)
+  - Removed hardcoded `:dev` image tags (replaced with config-driven tags)
+  - CLI now suitable for production use without code changes
+
+- **Test Reliability** (Testing v6.0.0)
+  - Test scripts properly wait for dummy deployment before restore
+  - Fixed timing issues in hook tests
+
+### Documentation
+
+- **Longhorn Namespace Hardcoding** (Documentation v6.0.0)
+  - Added detailed explanation in CLAUDE.md (Phase A)
+  - Explains why `longhorn-system` namespace is hardcoded
+  - Documents reliability vs flexibility tradeoff
+
+- **Data Validation** (Documentation v6.0.0)
+  - Added DATA_VALIDATION.md explaining test integrity validation
+  - Documents SHA256 checksum methodology
+
+- **README Update** (Documentation v6.0.0)
+  - Updated README to reflect restore functionality completion
+  - Added CLI installation instructions
+  - Removed "in development" status
+
+### Breaking Changes
+
+None - all changes are backward compatible or fixes
+
+---
+
 ## [5.0.7] - 2025-10-26
 
 ### Added
