@@ -80,7 +80,7 @@ Restore operations are fully supported via the `kbb` CLI tool:
 - **Pre/post hooks:** Scale deployments, execute commands during restore
 - **Configurable:** Custom image tags, storage classes, resource limits
 
-Install CLI: `pipx install git+https://github.com/frederikb96/kube-borg-backup.git#subdirectory=apps/cli`
+Install CLI: `pipx install git+https://github.com/frederikb96/kube-borg-backup.git#subdirectory=apps`
 
 See `kbb --help` for full command reference.
 

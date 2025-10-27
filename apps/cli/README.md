@@ -8,10 +8,10 @@ Install via pipx from GitHub:
 
 ```bash
 # Latest from main branch
-pipx install git+https://github.com/frederikb96/kube-borg-backup.git#subdirectory=apps/cli
+pipx install git+https://github.com/frederikb96/kube-borg-backup.git#subdirectory=apps
 
 # Specific version
-pipx install git+https://github.com/frederikb96/kube-borg-backup.git@v6.0.0#subdirectory=apps/cli
+pipx install git+https://github.com/frederikb96/kube-borg-backup.git@v6.0.0#subdirectory=apps
 ```
 
 ## Usage
@@ -35,7 +35,7 @@ kbb -n <namespace> -a <app> backup restore <archive-id> --pvc <target-pvc>
 ## Development
 
 ```bash
-cd apps/cli
+cd apps
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
