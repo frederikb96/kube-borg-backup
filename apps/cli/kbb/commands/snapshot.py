@@ -28,7 +28,7 @@ def list_snapshots(args: argparse.Namespace) -> None:
                 pvc_names.append(pvc_config['name'])
 
         if not pvc_names:
-            print(f"No PVCs configured for snapshot in app '{args.app}'")
+            print(f"No PVCs configured for snapshot in app '{args.app}'", flush=True)
             return
 
         # Query VolumeSnapshots
@@ -42,7 +42,7 @@ def list_snapshots(args: argparse.Namespace) -> None:
                 plural="volumesnapshots"
             )
         except client.exceptions.ApiException as e:
-            print(f"Error querying VolumeSnapshots: {e}", file=sys.stderr)
+            print(f"Error querying VolumeSnapshots: {e}", file=sys.stderr, flush=True)
             sys.exit(1)
 
         # Filter by source PVC
@@ -54,7 +54,7 @@ def list_snapshots(args: argparse.Namespace) -> None:
 
         # Display results
         if not matching_snapshots:
-            print(f"No snapshots found for app '{args.app}' in namespace '{args.namespace}'")
+            print(f"No snapshots found for app '{args.app}' in namespace '{args.namespace}'", flush=True)
             return
 
         # Sort by creation time (newest first)
@@ -64,9 +64,9 @@ def list_snapshots(args: argparse.Namespace) -> None:
         )
 
         # Print table
-        print(f"\nSnapshots for {args.app} ({len(matching_snapshots)} found):\n")
-        print(f"{'NAME':<50} {'PVC':<30} {'CREATED':<25} {'READY':<10}")
-        print("-" * 120)
+        print(f"\nSnapshots for {args.app} ({len(matching_snapshots)} found):\n", flush=True)
+        print(f"{'NAME':<50} {'PVC':<30} {'CREATED':<25} {'READY':<10}", flush=True)
+        print("-" * 120, flush=True)
 
         for snapshot in matching_snapshots:
             name = snapshot['metadata']['name']
@@ -74,15 +74,15 @@ def list_snapshots(args: argparse.Namespace) -> None:
             created = snapshot['metadata']['creationTimestamp']
             ready = snapshot.get('status', {}).get('readyToUse', False)
 
-            print(f"{name:<50} {pvc:<30} {created:<25} {'Yes' if ready else 'No':<10}")
+            print(f"{name:<50} {pvc:<30} {created:<25} {'Yes' if ready else 'No':<10}", flush=True)
 
-        print()  # Empty line after table
+        print(flush=True)  # Empty line after table
 
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr, flush=True)
         sys.exit(1)
     except Exception as e:
-        print(f"Unexpected error: {e}", file=sys.stderr)
+        print(f"Unexpected error: {e}", file=sys.stderr, flush=True)
         sys.exit(1)
 
 
@@ -95,7 +95,7 @@ def restore_snapshot(args: argparse.Namespace) -> None:
     3. Find snapshot and extract source PVC
     4. Determine target PVC (explicit or in-place restore)
     5. Create clone PVC from snapshot
-    6. Spawn rsync pod to copy data (no timeout - can take hours for large volumes)
+    6. Spawn rsync pod to copy data (waits indefinitely for completion)
     7. Execute post-hooks (best-effort)
     8. Cleanup clone PVC
 
@@ -111,23 +111,17 @@ def restore_snapshot(args: argparse.Namespace) -> None:
         config = find_app_config(args.namespace, args.app, args.release, config_type='snapshot')
         restore_config = config.get('restore', {})
 
-        # Extract image config for rsync pod
-        pod_config = config.get('pod', {})
-        default_repo = 'ghcr.io/frederikb96/kube-borg-backup/backup-runner'
-        image_repository = pod_config.get('image', {}).get('repository', default_repo)
-        image_tag = pod_config.get('image', {}).get('tag', 'latest')
-
         # Step 2: Execute pre-hooks (fail-fast)
         pre_hooks = restore_config.get('preHooks', [])
         if pre_hooks:
-            print("Executing pre-hooks...")
+            print("Executing pre-hooks...", flush=True)
             v1, _ = load_kube_client()
             api_client = v1.api_client
             result = execute_hooks(api_client, args.namespace, pre_hooks, mode='pre')
             if not result['success']:
-                print(f"Pre-hooks failed: {result['failed']}", file=sys.stderr)
+                print(f"Pre-hooks failed: {result['failed']}", file=sys.stderr, flush=True)
                 sys.exit(1)
-            print("Pre-hooks completed successfully")
+            print("Pre-hooks completed successfully", flush=True)
 
         # Step 3: Find snapshot
         v1, custom_api = load_kube_client()
@@ -143,31 +137,32 @@ def restore_snapshot(args: argparse.Namespace) -> None:
         except client.exceptions.ApiException as e:
             print(
                 f"Error: VolumeSnapshot '{args.snapshot_id}' not found in namespace '{args.namespace}'",
-                file=sys.stderr
+                file=sys.stderr,
+                flush=True
             )
-            print(f"Details: {e}", file=sys.stderr)
+            print(f"Details: {e}", file=sys.stderr, flush=True)
             sys.exit(1)
 
         # Verify snapshot is ready
         if not snapshot.get('status', {}).get('readyToUse', False):
-            print(f"Error: VolumeSnapshot '{args.snapshot_id}' is not ready to use", file=sys.stderr)
+            print(f"Error: VolumeSnapshot '{args.snapshot_id}' is not ready to use", file=sys.stderr, flush=True)
             sys.exit(1)
 
         # Extract source PVC name
         source_pvc = snapshot.get('spec', {}).get('source', {}).get('persistentVolumeClaimName')
         if not source_pvc:
-            print(f"Error: Could not determine source PVC from snapshot '{args.snapshot_id}'", file=sys.stderr)
+            print(f"Error: Could not determine source PVC from snapshot '{args.snapshot_id}'", file=sys.stderr, flush=True)
             sys.exit(1)
 
-        print(f"Found snapshot '{args.snapshot_id}' from source PVC '{source_pvc}'")
+        print(f"Found snapshot '{args.snapshot_id}' from source PVC '{source_pvc}'", flush=True)
 
         # Step 4: Determine target PVC
         target_pvc = args.pvc if args.pvc else source_pvc
-        print(f"Target PVC: {target_pvc}")
+        print(f"Target PVC: {target_pvc}", flush=True)
 
         # Step 5: Create clone PVC
         clone_pvc_name = f"{source_pvc}-restore-{int(time.time())}"
-        print(f"Creating clone PVC '{clone_pvc_name}' from snapshot...")
+        print(f"Creating clone PVC '{clone_pvc_name}' from snapshot...", flush=True)
 
         clone_result = create_clone_pvc(
             namespace=args.namespace,
@@ -175,26 +170,22 @@ def restore_snapshot(args: argparse.Namespace) -> None:
             clone_pvc_name=clone_pvc_name,
             storage_class='longhorn-temp'  # Use Immediate binding for testing
         )
-        print(f"Clone PVC created: {clone_result['name']} (binding mode: {clone_result['binding_mode']})")
+        print(f"Clone PVC created: {clone_result['name']} (binding mode: {clone_result['binding_mode']})", flush=True)
 
-        # Step 6: Spawn rsync pod (no timeout - restore can take hours for large volumes)
-        print(f"Spawning rsync pod to copy data to '{target_pvc}'...")
-        print("⏳ This may take a while for large volumes - please be patient...")
+        # Step 6: Spawn rsync pod (no timeout - waits indefinitely)
+        print(f"Spawning rsync pod to copy data to '{target_pvc}'...", flush=True)
         try:
             rsync_result = spawn_rsync_pod(
                 namespace=args.namespace,
                 source_pvc_name=clone_pvc_name,
-                target_pvc_name=target_pvc,
-                # NO timeout - restore operations can take hours for large volumes
-                image_repository=image_repository,
-                image_tag=image_tag
+                target_pvc_name=target_pvc
             )
             if not rsync_result['success']:
-                raise Exception(f"Rsync failed: {rsync_result['logs']}")
-            print("Data restored successfully")
+                raise Exception("Rsync failed")
+            print("Data restored successfully", flush=True)
 
         except Exception as e:
-            print(f"Restore failed: {e}", file=sys.stderr)
+            print(f"Restore failed: {e}", file=sys.stderr, flush=True)
             # Cleanup clone PVC
             _cleanup_clone_pvc(v1, args.namespace, clone_pvc_name)
             sys.exit(1)
@@ -202,24 +193,24 @@ def restore_snapshot(args: argparse.Namespace) -> None:
         # Step 7: Execute post-hooks (best-effort)
         post_hooks = restore_config.get('postHooks', [])
         if post_hooks:
-            print("Executing post-hooks...")
+            print("Executing post-hooks...", flush=True)
             api_client = v1.api_client
             result = execute_hooks(api_client, args.namespace, post_hooks, mode='post')
             if not result['success']:
-                print(f"Warning: Some post-hooks failed: {result['failed']}", file=sys.stderr)
+                print(f"Warning: Some post-hooks failed: {result['failed']}", file=sys.stderr, flush=True)
             else:
-                print("Post-hooks completed successfully")
+                print("Post-hooks completed successfully", flush=True)
 
         # Step 8: Cleanup clone PVC
         _cleanup_clone_pvc(v1, args.namespace, clone_pvc_name)
 
-        print(f"\n✅ Restore complete: snapshot '{args.snapshot_id}' → PVC '{target_pvc}'")
+        print(f"\n✅ Restore complete: snapshot '{args.snapshot_id}' → PVC '{target_pvc}'", flush=True)
 
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr, flush=True)
         sys.exit(1)
     except Exception as e:
-        print(f"Unexpected error: {e}", file=sys.stderr)
+        print(f"Unexpected error: {e}", file=sys.stderr, flush=True)
         sys.exit(1)
 
 
@@ -233,6 +224,6 @@ def _cleanup_clone_pvc(v1: client.CoreV1Api, namespace: str, pvc_name: str) -> N
     """
     try:
         v1.delete_namespaced_persistent_volume_claim(pvc_name, namespace)
-        print(f"Cleaned up clone PVC: {pvc_name}")
+        print(f"Cleaned up clone PVC: {pvc_name}", flush=True)
     except Exception:
         pass  # Ignore cleanup errors

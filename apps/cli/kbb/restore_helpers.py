@@ -2,8 +2,11 @@
 
 import sys
 import time
+import threading
 from typing import Any
 from kubernetes import client
+from kubernetes.client.exceptions import ApiException
+from kubernetes import watch
 from kbb.utils import load_kube_client
 
 
@@ -40,7 +43,7 @@ def create_clone_pvc(
         sc = storage_v1.read_storage_class(storage_class)
         binding_mode = sc.volume_binding_mode  # 'Immediate' or 'WaitForFirstConsumer'
     except client.exceptions.ApiException as e:
-        print(f"Error reading storage class '{storage_class}': {e}", file=sys.stderr)
+        print(f"Error reading storage class '{storage_class}': {e}", file=sys.stderr, flush=True)
         raise
 
     # Get snapshot to extract size if not provided
@@ -54,7 +57,7 @@ def create_clone_pvc(
                 name=snapshot_name
             )
         except client.exceptions.ApiException as e:
-            print(f"Error reading VolumeSnapshot '{snapshot_name}': {e}", file=sys.stderr)
+            print(f"Error reading VolumeSnapshot '{snapshot_name}': {e}", file=sys.stderr, flush=True)
             raise
 
         # Extract size from snapshot status
@@ -85,7 +88,7 @@ def create_clone_pvc(
     try:
         created_pvc = v1.create_namespaced_persistent_volume_claim(namespace, pvc)
     except client.exceptions.ApiException as e:
-        print(f"Error creating clone PVC '{clone_pvc_name}': {e}", file=sys.stderr)
+        print(f"Error creating clone PVC '{clone_pvc_name}': {e}", file=sys.stderr, flush=True)
         raise
 
     return {
@@ -100,36 +103,36 @@ def spawn_rsync_pod(
     source_pvc_name: str,
     target_pvc_name: str,
     pod_name: str | None = None,
-    timeout: int | None = None,
-    image_repository: str = 'ghcr.io/frederikb96/kube-borg-backup/backup-runner',
+    image_repository: str = 'alpine',
     image_tag: str = 'latest'
 ) -> dict[str, Any]:
     """Spawn rsync pod to copy data from source PVC to target PVC.
 
-    Creates an ephemeral backup-runner pod that:
-    1. Mounts source PVC read-only at /source
-    2. Mounts target PVC read-write at /target
-    3. Runs rsync --delete to sync data
-    4. Self-terminates on completion
+    Creates an ephemeral Alpine pod that:
+    1. Installs rsync
+    2. Mounts source PVC read-only at /source
+    3. Mounts target PVC read-write at /target
+    4. Runs rsync --delete to sync data
+    5. Self-terminates on completion
+
+    Waits indefinitely for pod completion (no timeout).
+    Streams logs in real-time using Kubernetes watch API.
 
     Args:
         namespace: Kubernetes namespace
         source_pvc_name: Source PVC name (clone from snapshot)
         target_pvc_name: Target PVC name (destination)
         pod_name: Optional pod name (auto-generated if not provided)
-        timeout: Optional timeout in seconds (None = no timeout, waits indefinitely)
-                 WARNING: Setting timeout on restore can kill large data transfers!
-        image_repository: Container image repository (default: backup-runner)
+        image_repository: Container image repository (default: alpine)
         image_tag: Container image tag (default: latest)
 
     Returns:
         Dict with:
             - success: bool
             - pod_name: Pod name used
-            - logs: Pod logs (for debugging)
 
     Raises:
-        Exception: If pod fails or times out
+        Exception: If pod fails
     """
     v1, _ = load_kube_client()
 
@@ -151,7 +154,7 @@ def spawn_rsync_pod(
                     name="rsync",
                     image=f"{image_repository}:{image_tag}",
                     command=["/bin/sh", "-c"],
-                    args=["rsync -av --delete /source/ /target/"],
+                    args=["apk add --no-cache rsync && rsync -av --delete /source/ /target/"],
                     volume_mounts=[
                         client.V1VolumeMount(name="source", mount_path="/source", read_only=True),
                         client.V1VolumeMount(name="target", mount_path="/target")
@@ -181,63 +184,150 @@ def spawn_rsync_pod(
     # Create pod
     try:
         v1.create_namespaced_pod(namespace, pod)
-        print(f"Rsync pod '{pod_name}' created in namespace '{namespace}'")
-    except client.exceptions.ApiException as e:
-        print(f"Error creating rsync pod '{pod_name}': {e}", file=sys.stderr)
+        print(f"Rsync pod '{pod_name}' created", flush=True)
+    except ApiException as e:
+        print(f"Error creating rsync pod '{pod_name}': {e}", file=sys.stderr, flush=True)
         raise
 
-    # Wait for completion (with optional timeout)
-    start_time = time.time()
+    print(f"⏳ Waiting for rsync pod to complete...", flush=True)
+
+    # Start log streaming in background thread
+    stop_event = threading.Event()
+    log_thread = threading.Thread(
+        target=_stream_pod_logs,
+        args=(v1, pod_name, namespace, stop_event),
+        daemon=True
+    )
+    log_thread.start()
+
+    # Monitor pod status (no timeout - wait indefinitely)
     while True:
         try:
             pod_status = v1.read_namespaced_pod_status(pod_name, namespace)
             phase = pod_status.status.phase
 
             if phase == "Succeeded":
-                # Get logs before cleanup
-                logs = v1.read_namespaced_pod_log(pod_name, namespace)
-                print(f"Rsync pod '{pod_name}' completed successfully")
+                # Stop log streaming
+                stop_event.set()
+                log_thread.join(timeout=5)
+
+                print(f"✅ Rsync pod completed successfully", flush=True)
 
                 # Cleanup pod
                 try:
                     v1.delete_namespaced_pod(pod_name, namespace)
-                    print(f"Rsync pod '{pod_name}' deleted")
-                except client.exceptions.ApiException:
+                except ApiException:
                     pass  # Ignore deletion errors
 
-                return {"success": True, "pod_name": pod_name, "logs": logs}
+                return {"success": True, "pod_name": pod_name}
 
             elif phase == "Failed":
-                # Get logs before cleanup
+                # Stop log streaming
+                stop_event.set()
+                log_thread.join(timeout=5)
+
+                # Get logs for error context
                 try:
                     logs = v1.read_namespaced_pod_log(pod_name, namespace)
-                except client.exceptions.ApiException:
+                except ApiException:
                     logs = "Could not retrieve pod logs"
 
                 # Cleanup pod
                 try:
                     v1.delete_namespaced_pod(pod_name, namespace)
-                except client.exceptions.ApiException:
+                except ApiException:
                     pass  # Ignore deletion errors
 
                 raise Exception(f"Rsync pod '{pod_name}' failed:\n{logs}")
 
-            # Only check timeout if one was provided
-            if timeout is not None and (time.time() - start_time) > timeout:
-                # Timeout - get logs and cleanup
+        except ApiException as e:
+            stop_event.set()
+            print(f"⚠️  Error checking pod status: {e}", file=sys.stderr, flush=True)
+            raise
+
+        time.sleep(5)
+
+
+def _stream_pod_logs(
+    v1: client.CoreV1Api,
+    pod_name: str,
+    namespace: str,
+    stop_event: threading.Event
+) -> None:
+    """Stream pod logs to stdout in real-time (runs in background thread).
+
+    Args:
+        v1: CoreV1Api client
+        pod_name: Pod name to stream logs from
+        namespace: Kubernetes namespace
+        stop_event: Threading event to signal when to stop streaming
+    """
+    try:
+        # Wait for container to be ready
+        while not stop_event.is_set():
+            try:
+                pod = v1.read_namespaced_pod(pod_name, namespace)
+
+                # Check container status
+                if pod.status.container_statuses:
+                    for container in pod.status.container_statuses:
+                        # Container running - ready to stream
+                        if container.state.running and container.state.running.started_at:
+                            break
+
+                        # Container terminated - need fallback
+                        if container.state.terminated:
+                            break
+                    else:
+                        # No container ready yet, keep polling
+                        time.sleep(2)
+                        continue
+
+                    # Found container in ready state, break outer loop
+                    break
+            except ApiException:
+                pass
+
+            time.sleep(2)
+
+        # If stop_event was set before container ready, exit
+        if stop_event.is_set():
+            return
+
+        # Try streaming logs with follow=True
+        try:
+            log_stream = v1.read_namespaced_pod_log(
+                pod_name,
+                namespace,
+                follow=True,
+                _preload_content=False
+            )
+
+            # Stream logs line by line
+            for line in log_stream:
+                if stop_event.is_set():
+                    break
+                line_str = line.decode('utf-8').rstrip('\n\r')
+                if line_str:
+                    print(f"[{pod_name}] {line_str}", flush=True)
+
+        except ApiException as exc:
+            # Handle "Bad Request" - pod completed before streaming started
+            if hasattr(exc, 'status') and exc.status == 400:
+                # Fallback: Read all logs without follow
                 try:
                     logs = v1.read_namespaced_pod_log(pod_name, namespace)
-                except client.exceptions.ApiException:
-                    logs = "Could not retrieve pod logs"
+                    if logs:
+                        for line in logs.split('\n'):
+                            if line.strip():
+                                print(f"[{pod_name}] {line}", flush=True)
+                except ApiException:
+                    pass
+            elif not stop_event.is_set():
+                # Other error - log it
+                reason = exc.reason if hasattr(exc, 'reason') else str(exc)
+                print(f"⚠️  Log streaming ended: {reason}", file=sys.stderr, flush=True)
 
-                try:
-                    v1.delete_namespaced_pod(pod_name, namespace)
-                except client.exceptions.ApiException:
-                    pass  # Ignore deletion errors
-
-                raise Exception(f"Rsync pod '{pod_name}' timeout after {timeout}s:\n{logs}")
-
-        except client.exceptions.ApiException as e:
-            print(f"Error checking pod status: {e}", file=sys.stderr)
-
-        time.sleep(2)
+    except Exception as exc:
+        if not stop_event.is_set():
+            print(f"⚠️  Error streaming logs: {exc}", file=sys.stderr, flush=True)

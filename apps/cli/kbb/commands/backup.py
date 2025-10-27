@@ -4,9 +4,11 @@ import argparse
 import json
 import sys
 import time
+import threading
 from typing import Any
 import yaml
 from kubernetes import client
+from kubernetes.client.exceptions import ApiException
 from kbb.utils import find_app_config, load_kube_client
 
 
@@ -238,7 +240,7 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
     2. Execute pre-hooks (fail-fast)
     3. Determine target PVC (explicit or first backup PVC)
     4. Create ephemeral config Secret
-    5. Spawn borg-restore pod (no timeout - can take hours for large datasets)
+    5. Spawn borg-restore pod (waits indefinitely for completion)
     6. Execute post-hooks (best-effort)
     7. Cleanup pod + secret
 
@@ -359,28 +361,53 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
         )
 
         print(f"Spawning borg restore pod '{pod_name}'...")
-        print("⏳ Restoring from borg archive - this may take hours for large datasets...")
+        print("⏳ Restoring from borg archive...")
 
         try:
             v1.create_namespaced_pod(args.namespace, pod)
-            print(f"Borg restore pod '{pod_name}' created")
+            print(f"Borg restore pod created")
 
-            # Wait for completion (no timeout - let it run as long as needed)
+            # Start log streaming in background thread
+            stop_event = threading.Event()
+            log_thread = threading.Thread(
+                target=_stream_pod_logs,
+                args=(v1, pod_name, args.namespace, stop_event),
+                daemon=True
+            )
+            log_thread.start()
+
+            # Monitor pod status (no timeout - wait indefinitely)
             while True:
-                pod_status = v1.read_namespaced_pod_status(pod_name, args.namespace)
-                phase = pod_status.status.phase
+                try:
+                    pod_status = v1.read_namespaced_pod_status(pod_name, args.namespace)
+                    phase = pod_status.status.phase
 
-                if phase == 'Succeeded':
-                    # Get logs
-                    logs = v1.read_namespaced_pod_log(pod_name, args.namespace)
-                    print("Restore completed successfully")
-                    print(f"Logs:\n{logs}")
-                    break
-                elif phase == 'Failed':
-                    logs = v1.read_namespaced_pod_log(pod_name, args.namespace)
-                    raise Exception(f"Restore pod failed:\n{logs}")
+                    if phase == 'Succeeded':
+                        # Stop log streaming
+                        stop_event.set()
+                        log_thread.join(timeout=5)
 
-                time.sleep(2)
+                        print("✅ Restore completed successfully")
+                        break
+                    elif phase == 'Failed':
+                        # Stop log streaming
+                        stop_event.set()
+                        log_thread.join(timeout=5)
+
+                        # Get logs for error context
+                        try:
+                            logs = v1.read_namespaced_pod_log(pod_name, args.namespace)
+                        except ApiException:
+                            logs = "Could not retrieve pod logs"
+
+                        raise Exception(f"Restore pod failed:\n{logs}")
+
+                except ApiException as e:
+                    stop_event.set()
+                    print(f"⚠️  Error checking pod status: {e}", file=sys.stderr)
+                    raise
+
+                time.sleep(5)
 
         except Exception as e:
             print(f"Restore failed: {e}", file=sys.stderr)
@@ -432,3 +459,88 @@ def _cleanup_restore_resources(v1: client.CoreV1Api, namespace: str, pod_name: s
         print(f"Cleaned up restore secret: {secret_name}")
     except Exception:
         pass  # Ignore cleanup errors
+
+
+def _stream_pod_logs(
+    v1: client.CoreV1Api,
+    pod_name: str,
+    namespace: str,
+    stop_event: threading.Event
+) -> None:
+    """Stream pod logs to stdout in real-time (runs in background thread).
+
+    Args:
+        v1: CoreV1Api client
+        pod_name: Pod name to stream logs from
+        namespace: Kubernetes namespace
+        stop_event: Threading event to signal when to stop streaming
+    """
+    try:
+        # Wait for container to be ready
+        while not stop_event.is_set():
+            try:
+                pod = v1.read_namespaced_pod(pod_name, namespace)
+
+                # Check container status
+                if pod.status.container_statuses:
+                    for container in pod.status.container_statuses:
+                        # Container running - ready to stream
+                        if container.state.running and container.state.running.started_at:
+                            break
+
+                        # Container terminated - need fallback
+                        if container.state.terminated:
+                            break
+                    else:
+                        # No container ready yet, keep polling
+                        time.sleep(2)
+                        continue
+
+                    # Found container in ready state, break outer loop
+                    break
+            except ApiException:
+                pass
+
+            time.sleep(2)
+
+        # If stop_event was set before container ready, exit
+        if stop_event.is_set():
+            return
+
+        # Try streaming logs with follow=True
+        try:
+            log_stream = v1.read_namespaced_pod_log(
+                pod_name,
+                namespace,
+                follow=True,
+                _preload_content=False
+            )
+
+            # Stream logs line by line
+            for line in log_stream:
+                if stop_event.is_set():
+                    break
+                line_str = line.decode('utf-8').rstrip('\n\r')
+                if line_str:
+                    print(f"[{pod_name}] {line_str}", flush=True)
+
+        except ApiException as exc:
+            # Handle "Bad Request" - pod completed before streaming started
+            if hasattr(exc, 'status') and exc.status == 400:
+                # Fallback: Read all logs without follow
+                try:
+                    logs = v1.read_namespaced_pod_log(pod_name, namespace)
+                    if logs:
+                        for line in logs.split('\n'):
+                            if line.strip():
+                                print(f"[{pod_name}] {line}", flush=True)
+                except ApiException:
+                    pass
+            elif not stop_event.is_set():
+                # Other error - log it
+                reason = exc.reason if hasattr(exc, 'reason') else str(exc)
+                print(f"⚠️  Log streaming ended: {reason}", file=sys.stderr, flush=True)
+
+    except Exception as exc:
+        if not stop_event.is_set():
+            print(f"⚠️  Error streaming logs: {exc}", file=sys.stderr, flush=True)
