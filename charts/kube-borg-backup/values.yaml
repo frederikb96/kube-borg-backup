@@ -101,6 +101,13 @@ borgbackup:
 ## Restore Configuration (v6.0.0+)
 ## =============================================================================
 restore:
+  # Container image for restore pods (rsync, borg restore)
+  pod:
+    image:
+      repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
+      tag: latest
+      pullPolicy: Always
+
   # RBAC extensions for restore operations
   # Standard permissions (Apps API for scale hooks, Batch API for in-cluster mode)
   # are included by default. Use additionalRules for custom requirements.

@@ -128,6 +128,17 @@ Returns: merged borgbackup config with app overrides taking precedence
 {{- end -}}
 
 {{/*
+Merge restore defaults with per-app overrides
+Usage: {{ include "kube-borg-backup.mergeRestoreConfig" (dict "root" $ "app" .) }}
+Returns: merged restore config with app overrides taking precedence
+*/}}
+{{- define "kube-borg-backup.mergeRestoreConfig" -}}
+{{- $defaults := .root.Values.restore -}}
+{{- $appConfig := .app.restore | default dict -}}
+{{- toJson (mergeOverwrite (deepCopy $defaults) $appConfig) -}}
+{{- end -}}
+
+{{/*
 Resolve borg repository configuration from borgRepos by name
 Usage: {{ include "kube-borg-backup.resolveBorgRepo" (dict "root" $ "repoName" "borgbase-main") }}
 Returns: repository config dict or fails if not found

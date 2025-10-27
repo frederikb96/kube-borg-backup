@@ -102,18 +102,17 @@ def spawn_rsync_pod(
     namespace: str,
     source_pvc_name: str,
     target_pvc_name: str,
-    pod_name: str | None = None,
-    image_repository: str = 'alpine',
-    image_tag: str = 'latest'
+    image_repository: str,
+    image_tag: str,
+    pod_name: str | None = None
 ) -> dict[str, Any]:
     """Spawn rsync pod to copy data from source PVC to target PVC.
 
-    Creates an ephemeral Alpine pod that:
-    1. Installs rsync
-    2. Mounts source PVC read-only at /source
-    3. Mounts target PVC read-write at /target
-    4. Runs rsync --delete to sync data
-    5. Self-terminates on completion
+    Creates an ephemeral pod using backup-runner image that:
+    1. Mounts source PVC read-only at /source
+    2. Mounts target PVC read-write at /target
+    3. Runs rsync --delete to sync data (overrides Dockerfile CMD)
+    4. Self-terminates on completion
 
     Waits indefinitely for pod completion (no timeout).
     Streams logs in real-time using Kubernetes watch API.
@@ -122,9 +121,9 @@ def spawn_rsync_pod(
         namespace: Kubernetes namespace
         source_pvc_name: Source PVC name (clone from snapshot)
         target_pvc_name: Target PVC name (destination)
+        image_repository: Container image repository (REQUIRED - should be backup-runner)
+        image_tag: Container image tag (REQUIRED)
         pod_name: Optional pod name (auto-generated if not provided)
-        image_repository: Container image repository (default: alpine)
-        image_tag: Container image tag (default: latest)
 
     Returns:
         Dict with:
@@ -153,8 +152,12 @@ def spawn_rsync_pod(
                 client.V1Container(
                     name="rsync",
                     image=f"{image_repository}:{image_tag}",
+                    # Override Dockerfile CMD (default is backup.py) with rsync command
+                    # Flags: -a (archive), -H (hard-links), -A (ACLs), -X (xattrs), -x (one-fs),
+                    #        -v (verbose), --numeric-ids (preserve UIDs/GIDs), --delete (remove extras),
+                    #        --sparse (efficient sparse files), --inplace (update files directly)
                     command=["/bin/sh", "-c"],
-                    args=["apk add --no-cache rsync && rsync -av --delete /source/ /target/"],
+                    args=["rsync -aHAXxv --numeric-ids --delete --sparse --inplace /source/ /target/"],
                     volume_mounts=[
                         client.V1VolumeMount(name="source", mount_path="/source", read_only=True),
                         client.V1VolumeMount(name="target", mount_path="/target")

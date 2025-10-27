@@ -175,10 +175,19 @@ def restore_snapshot(args: argparse.Namespace) -> None:
         # Step 6: Spawn rsync pod (no timeout - waits indefinitely)
         print(f"Spawning rsync pod to copy data to '{target_pvc}'...", flush=True)
         try:
+            # Extract restore pod image config (REQUIRED)
+            pod_config = restore_config.get('pod', {})
+            image_config = pod_config.get('image', {})
+            if not image_config.get('repository') or not image_config.get('tag'):
+                raise ValueError("restore.pod.image.repository and restore.pod.image.tag are REQUIRED in config")
+
             rsync_result = spawn_rsync_pod(
                 namespace=args.namespace,
                 source_pvc_name=clone_pvc_name,
-                target_pvc_name=target_pvc
+                target_pvc_name=target_pvc,
+                image_repository=image_config['repository'],
+                image_tag=image_config['tag'],
+                pod_name=None  # Auto-generate
             )
             if not rsync_result['success']:
                 raise Exception("Rsync failed")
