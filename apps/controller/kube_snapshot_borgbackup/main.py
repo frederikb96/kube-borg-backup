@@ -19,7 +19,6 @@ import argparse
 import os
 import signal
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -28,9 +27,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from kubernetes import client, config as k8s_config, watch
+from kubernetes import client, config as k8s_config
 from kubernetes.client.rest import ApiException
 from kubernetes.config.config_exception import ConfigException
+
+from common.pod_monitor import PodMonitor
 
 SNAP_GROUP = "snapshot.storage.k8s.io"
 SNAP_VERSION = "v1"
@@ -649,164 +650,6 @@ def build_borg_pod_manifest(
     return manifest
 
 
-def stream_pod_logs(
-    v1: client.CoreV1Api,
-    pod_name: str,
-    namespace: str,
-    stop_event: threading.Event
-) -> None:
-    """Stream pod logs to stdout in real-time (runs in background thread).
-
-    Args:
-        v1: CoreV1Api client
-        pod_name: Pod name to stream logs from
-        namespace: Kubernetes namespace
-        stop_event: Threading event to signal when to stop streaming
-    """
-    try:
-        # Poll until container is ready OR stop_event is set
-        # No hardcoded timeout - main thread sets stop_event when pod completes
-        while not stop_event.is_set():
-            try:
-                pod = v1.read_namespaced_pod(pod_name, namespace)
-
-                # Check container status (not just pod phase)
-                if pod.status.container_statuses:
-                    for container in pod.status.container_statuses:
-                        # Container running - ready to stream!
-                        if container.state.running and container.state.running.started_at:
-                            break
-
-                        # Container terminated (succeeded/failed) - need fallback
-                        if container.state.terminated:
-                            break
-                    else:
-                        # No container ready yet, keep polling
-                        time.sleep(2)
-                        continue
-
-                    # Found container in ready state, break outer loop
-                    break
-            except ApiException:
-                pass
-
-            time.sleep(2)
-
-        # If stop_event was set before container ready, exit
-        if stop_event.is_set():
-            return
-
-        # Try streaming logs with follow=True
-        try:
-            log_stream = v1.read_namespaced_pod_log(
-                pod_name,
-                namespace,
-                follow=True,  # Always try follow first
-                _preload_content=False
-            )
-
-            # Stream logs line by line
-            for line in log_stream:
-                if stop_event.is_set():
-                    break
-                line_str = line.decode('utf-8').rstrip('\n\r')
-                if line_str:
-                    print(f"[{pod_name}] {line_str}", flush=True)
-
-        except ApiException as exc:
-            # Handle "Bad Request" - likely pod completed before streaming started
-            if hasattr(exc, 'status') and exc.status == 400:
-                # Fallback: Read all logs without follow
-                try:
-                    logs = v1.read_namespaced_pod_log(pod_name, namespace)
-                    if logs:
-                        for line in logs.split('\n'):
-                            if line.strip():
-                                print(f"[{pod_name}] {line}", flush=True)
-                except ApiException:
-                    # Even fallback failed - just log warning
-                    if not stop_event.is_set():
-                        log_msg(f"⚠️  Could not retrieve logs for {pod_name}")
-            else:
-                # Other error - log it
-                if not stop_event.is_set():
-                    reason = exc.reason if hasattr(exc, 'reason') else exc
-                    log_msg(f"⚠️  Log streaming ended for {pod_name}: {reason}")
-
-    except Exception as exc:
-        log_msg(f"⚠️  Error streaming logs for {pod_name}: {exc}")
-
-
-def stream_pod_events(
-    v1: client.CoreV1Api,
-    pod_name: str,
-    namespace: str,
-    stop_event: threading.Event
-) -> None:
-    """Stream pod events to stdout in real-time (runs in background thread).
-
-    This function continuously watches for events until stop_event is set.
-    It automatically reconnects when watch timeouts occur to ensure
-    continuous event monitoring throughout pod lifecycle.
-
-    Args:
-        v1: CoreV1Api client
-        pod_name: Pod name to stream events for
-        namespace: Kubernetes namespace
-        stop_event: Threading event to signal when to stop streaming
-    """
-    try:
-        latest_resource_version = None
-
-        while not stop_event.is_set():
-            w = watch.Watch()
-
-            try:
-                # Build kwargs with optional resourceVersion
-                kwargs = {
-                    'namespace': namespace,
-                    'field_selector': f"involvedObject.kind=Pod,involvedObject.name={pod_name}",
-                    'timeout_seconds': 60
-                }
-
-                # Resume from last seen event (no duplicates!)
-                if latest_resource_version:
-                    kwargs['resource_version'] = latest_resource_version
-
-                for event in w.stream(v1.list_namespaced_event, **kwargs):
-                    if stop_event.is_set():
-                        break
-
-                    obj = event['object']
-                    print(f"[EVENT] {obj.reason}: {obj.message}", flush=True)
-
-                    # Track resourceVersion for next reconnect
-                    latest_resource_version = obj.metadata.resource_version
-
-            except ApiException as exc:
-                # Ignore status 410 (resource version too old) - normal on reconnect
-                if hasattr(exc, 'status') and exc.status == 410:
-                    # Reset resourceVersion, will get fresh events
-                    latest_resource_version = None
-                    time.sleep(1)
-                    continue
-
-                if not stop_event.is_set():
-                    reason = exc.reason if hasattr(exc, 'reason') else exc
-                    log_msg(f"⚠️  Event watch interrupted for {pod_name}: {reason}")
-                break
-
-            finally:
-                w.stop()
-
-            # Brief pause before reconnect
-            if not stop_event.is_set():
-                time.sleep(1)
-
-    except Exception as exc:
-        log_msg(f"⚠️  Error streaming events for {pod_name}: {exc}")
-
-
 def spawn_borg_pod(
     v1: client.CoreV1Api,
     manifest: dict[str, Any],
@@ -835,22 +678,9 @@ def spawn_borg_pod(
 
     log_msg(f"⏳ Waiting for borg pod {pod_name} to complete (timeout: {timeout}s)...")
 
-    # Start event streaming in background thread
-    stop_event = threading.Event()
-    event_thread = threading.Thread(
-        target=stream_pod_events,
-        args=(v1, pod_name, namespace, stop_event),
-        daemon=True
-    )
-    event_thread.start()
-
-    # Start log streaming in background thread
-    log_thread = threading.Thread(
-        target=stream_pod_logs,
-        args=(v1, pod_name, namespace, stop_event),
-        daemon=True
-    )
-    log_thread.start()
+    # Start monitoring (events + logs in background threads)
+    monitor = PodMonitor(v1, pod_name, namespace)
+    monitor.start()
 
     # Monitor pod status
     end = time.time() + timeout
@@ -860,10 +690,8 @@ def spawn_borg_pod(
             phase = pod.status.phase
 
             if phase in {"Succeeded", "Failed"}:
-                # Stop both streaming threads
-                stop_event.set()
-                log_thread.join(timeout=5)  # Wait up to 5s for log thread to finish
-                event_thread.join(timeout=5)  # Wait up to 5s for event thread to finish
+                # Stop monitoring threads
+                monitor.stop()
 
                 if phase == "Succeeded":
                     log_msg(f"✅ Borg pod {pod_name} completed successfully")
@@ -874,13 +702,13 @@ def spawn_borg_pod(
 
         except ApiException as exc:
             log_msg(f"⚠️  Error reading pod {pod_name}: {exc}")
-            stop_event.set()
+            monitor.stop()
             return False
 
         time.sleep(10)
 
     # Timeout reached
-    stop_event.set()
+    monitor.stop()
     log_msg(f"❌ Borg pod {pod_name} timeout after {timeout}s")
     return False
 
