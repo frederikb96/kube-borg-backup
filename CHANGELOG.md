@@ -82,6 +82,17 @@ None - all changes are backward compatible or fixes
 
 ---
 
+## [5.0.8] - 2025-10-28
+
+### Fixed
+
+- **CRITICAL: Clone PVC Creation Failure for Long PVC Names**
+  - Removed unused `pvc` label from clone PVCs that was causing 422 errors
+  - Kubernetes label values limited to 63 characters, clone names could exceed this (e.g., HedgeDoc: 65 chars)
+  - Label was unused in codebase (cleanup uses `_tracked_resources` list, not labels)
+  - Affects apps with long PVC base names (hedgedoc-uploads-pvc-enc, hedgedoc-postgres-pvc-enc)
+  - Fix: apps/controller/kube_snapshot_borgbackup/main.py:324-328
+
 ## [5.0.7] - 2025-10-26
 
 ### Added
