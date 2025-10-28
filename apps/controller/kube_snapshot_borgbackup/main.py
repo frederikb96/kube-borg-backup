@@ -313,7 +313,6 @@ def create_clone_pvc(
             "namespace": namespace,
             "labels": {
                 "app": "kube-borg-backup",
-                "pvc": clone_name,
                 "managed-by": "kube-borg-backup"
             }
         },
