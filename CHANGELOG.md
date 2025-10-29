@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Ensures data integrity across restore workflows
   - See DATA_VALIDATION.md for methodology
 
+- **Heartbeat Monitoring for Long-Running Backups** (Backup-Runner v6.0.0)
+  - Progress monitoring during silent deduplication phases
+  - Prints heartbeat every 60 seconds with CPU, I/O, and memory metrics
+  - Tracks delta changes between heartbeats for activity visibility
+  - Essential for large backups (multi-TB) where borg is silent for hours
+  - Uses psutil for lightweight process monitoring
+
 ### Changed
 
 - **CRITICAL: Removed Timeout Limits from Restore Operations** (CLI v1.0.0)
@@ -51,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Configurable via Helm values for production deployments
 
 ### Fixed
+
+- **CRITICAL: Event Streaming Infinite Loop in Long-Running Backups** (Controller v6.0.0)
+  - Fixed bug in `apps/common/pod_monitor.py` causing infinite event replay
+  - Was using individual Event object's resource_version instead of watch list's resource_version
+  - Triggered on 60-second watch timeout, causing massive log spam in long-running backups (Immich)
+  - Events would replay infinitely: Scheduled → FailedAttachVolume → SuccessfulAttachVolume (30+ times)
+  - Fix: Use watch response metadata's resource_version for proper resumption
+  - Affects: v5.0.7, v5.0.8 (only visible in backups >60s runtime)
 
 - **Production-Ready CLI** (CLI v1.0.0)
   - Removed hardcoded `:dev` image tags (replaced with config-driven tags)

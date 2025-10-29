@@ -151,7 +151,10 @@ def restore_snapshot(args: argparse.Namespace) -> None:
         # Extract source PVC name
         source_pvc = snapshot.get('spec', {}).get('source', {}).get('persistentVolumeClaimName')
         if not source_pvc:
-            print(f"Error: Could not determine source PVC from snapshot '{args.snapshot_id}'", file=sys.stderr, flush=True)
+            print(
+                f"Error: Could not determine source PVC from snapshot '{args.snapshot_id}'",
+                file=sys.stderr, flush=True
+            )
             sys.exit(1)
 
         print(f"Found snapshot '{args.snapshot_id}' from source PVC '{source_pvc}'", flush=True)

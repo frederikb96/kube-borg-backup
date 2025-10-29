@@ -189,8 +189,11 @@ class PodMonitor:
                         obj = event['object']
                         print(f"[EVENT] {obj.reason}: {obj.message}", flush=True)
 
-                        # Track resourceVersion for next reconnect
-                        latest_resource_version = obj.metadata.resource_version
+                        # Track list resource_version from watch response for next reconnect
+                        # Using event['object'].metadata.resource_version would cause infinite
+                        # event replay on 60s timeout reconnects (Bug #1 - v5.0.7-v5.0.8)
+                        if 'raw_object' in event and 'metadata' in event['raw_object']:
+                            latest_resource_version = event['raw_object']['metadata'].get('resourceVersion')
 
                 except ApiException as exc:
                     # Ignore status 410 (resource version too old) - normal on reconnect

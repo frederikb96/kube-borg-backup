@@ -18,8 +18,11 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, UTC
+
+import psutil
 
 from common import load_config, setup_ssh_key, get_borg_env, init_borg_repo
 
@@ -121,6 +124,72 @@ def handle_shutdown(signum, frame):
     sys.exit(143)
 
 
+def monitor_borg_heartbeat(pid: int, stop_event: threading.Event) -> None:
+    """Monitor borg process and print heartbeat every 60s.
+
+    Tracks CPU time, I/O bytes, memory usage, and thread count to provide
+    progress indication during silent deduplication phases.
+
+    Args:
+        pid: Borg process ID to monitor
+        stop_event: Event to signal monitoring should stop
+    """
+    try:
+        process = psutil.Process(pid)
+
+        # Establish baseline metrics
+        baseline_cpu = process.cpu_times()
+        baseline_io = process.io_counters()
+        baseline_threads = process.num_threads()
+        baseline_memory = process.memory_info().rss / (1024 * 1024)  # MB
+
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(
+            f"[{timestamp}] [HEARTBEAT] Baseline established | "
+            f"Threads: {baseline_threads} | Memory: {baseline_memory:.1f}MB"
+        )
+
+        # Store previous values for delta calculation
+        prev_cpu = baseline_cpu
+        prev_io = baseline_io
+
+        while not stop_event.wait(timeout=60):
+            try:
+                # Check if process still exists
+                if not process.is_running():
+                    break
+
+                # Get current metrics
+                current_cpu = process.cpu_times()
+                current_io = process.io_counters()
+                current_memory = process.memory_info().rss / (1024 * 1024)  # MB
+
+                # Calculate deltas since last heartbeat
+                cpu_delta = (current_cpu.user - prev_cpu.user) + (current_cpu.system - prev_cpu.system)
+                io_delta = (current_io.read_bytes - prev_io.read_bytes) + (current_io.write_bytes - prev_io.write_bytes)
+                io_delta_mb = io_delta / (1024 * 1024)  # MB
+
+                # Update previous values
+                prev_cpu = current_cpu
+                prev_io = current_io
+
+                timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+                logger.info(
+                    f"[{timestamp}] [HEARTBEAT] ✓ ACTIVE | CPU: +{cpu_delta:.1f}s | "
+                    f"I/O: +{io_delta_mb:.1f}MB | Memory: {current_memory:.1f}MB"
+                )
+
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # Process terminated or access denied - normal exit
+                break
+            except Exception as exc:
+                logger.warning(f"Heartbeat monitoring error: {exc}")
+                break
+
+    except Exception as exc:
+        logger.warning(f"Failed to start heartbeat monitoring: {exc}")
+
+
 def run_backup(config: dict) -> int:
     """Run borg backup with configuration.
 
@@ -182,9 +251,23 @@ def run_backup(config: dict) -> int:
 
         logger.info(f"Borg PID: {_borg_process.pid}")
 
+        # Start heartbeat monitoring thread
+        stop_heartbeat = threading.Event()
+        heartbeat_thread = threading.Thread(
+            target=monitor_borg_heartbeat,
+            args=(_borg_process.pid, stop_heartbeat),
+            name="heartbeat-monitor",
+            daemon=True
+        )
+        heartbeat_thread.start()
+
         # Wait for borg to complete
         exit_code = _borg_process.wait()
         _borg_process = None
+
+        # Stop heartbeat monitoring
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=2)
 
         # If exit code 2, check repo status and retry
         if exit_code == 2:
@@ -201,8 +284,23 @@ def run_backup(config: dict) -> int:
             )
 
             logger.info(f"Borg PID: {_borg_process.pid}")
+
+            # Restart heartbeat monitoring for retry
+            stop_heartbeat = threading.Event()
+            heartbeat_thread = threading.Thread(
+                target=monitor_borg_heartbeat,
+                args=(_borg_process.pid, stop_heartbeat),
+                name="heartbeat-monitor-retry",
+                daemon=True
+            )
+            heartbeat_thread.start()
+
             exit_code = _borg_process.wait()
             _borg_process = None
+
+            # Stop heartbeat monitoring
+            stop_heartbeat.set()
+            heartbeat_thread.join(timeout=2)
 
         if exit_code != 0:
             logger.error(f"Borg exited with code: {exit_code}")

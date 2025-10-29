@@ -257,7 +257,7 @@ def run_restore(config: dict) -> int:
     # Check repository status
     init_borg_repo(config, env)
 
-    logger.info(f"Starting restore operation")
+    logger.info("Starting restore operation")
     logger.info(f"Archive: {archive_name}")
     logger.info(f"Target: {target_path}")
 

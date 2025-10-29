@@ -5,7 +5,7 @@ FROM python:3.13-alpine
 # Install borgbackup via pip (Alpine package lacks FUSE support)
 RUN apk add --no-cache openssh-client rsync fuse fuse3 fuse3-dev gcc musl-dev linux-headers \
         lz4-dev openssl-dev acl-dev zstd-dev xxhash-dev && \
-    pip install --no-cache-dir PyYAML pyfuse3 borgbackup
+    pip install --no-cache-dir PyYAML pyfuse3 borgbackup psutil
 
 # Copy all Python modules
 COPY common.py /app/common.py
