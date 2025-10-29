@@ -14,8 +14,8 @@ from kubernetes.client.exceptions import ApiException
 
 
 def log_msg(msg: str) -> None:
-    """Print message to stderr for logging (matches controller behavior)."""
-    print(msg, file=sys.stderr, flush=True)
+    """Print message to stdout for logging (CLI user visibility)."""
+    print(msg, flush=True)
 
 
 class PodMonitor:

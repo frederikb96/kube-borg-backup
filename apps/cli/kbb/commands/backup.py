@@ -242,13 +242,21 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
     3. Determine target PVC (explicit or first backup PVC)
     4. Create ephemeral config Secret
     5. Spawn borg-restore pod (waits indefinitely for completion)
-    6. Execute post-hooks (best-effort)
-    7. Cleanup pod + secret
+    6. Execute post-hooks (ONLY on success! Skip on failure to avoid scaling up broken deployment)
+    7. Cleanup pod + secret (ALWAYS, even on failure)
 
     Args:
         args: CLI arguments with namespace, app, release, archive_id, optional pvc
     """
     from kbb.hooks import execute_hooks
+
+    # Track resources for cleanup
+    v1 = None
+    pod_name = None
+    secret_name = None
+    restore_succeeded = False
+    restore_config = {}
+    target_pvc = None
 
     try:
         # Step 1: Load config
@@ -270,12 +278,13 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
             api_client = v1.api_client
             result = execute_hooks(api_client, args.namespace, pre_hooks, mode='pre')
             if not result['success']:
-                print(f"Pre-hooks failed: {result['failed']}", file=sys.stderr)
+                print(f"❌ Pre-hooks failed: {result['failed']}", file=sys.stderr)
                 sys.exit(1)
-            print("Pre-hooks completed successfully")
+            print("✅ Pre-hooks completed successfully")
 
         # Step 3: Determine target PVC
-        v1, _ = load_kube_client()
+        if not v1:
+            v1, _ = load_kube_client()
 
         if args.pvc:
             target_pvc = args.pvc
@@ -364,73 +373,84 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
         print(f"Spawning borg restore pod '{pod_name}'...")
         print("⏳ Restoring from borg archive...")
 
-        try:
-            v1.create_namespaced_pod(args.namespace, pod)
-            print("Borg restore pod created")
+        v1.create_namespaced_pod(args.namespace, pod)
+        print("Borg restore pod created")
 
-            # Start monitoring (events + logs in background threads)
-            monitor = PodMonitor(v1, pod_name, args.namespace)
-            monitor.start()
+        # Start monitoring (events + logs in background threads)
+        monitor = PodMonitor(v1, pod_name, args.namespace)
+        monitor.start()
 
-            # Monitor pod status (no timeout - wait indefinitely)
-            while True:
-                try:
-                    pod_status = v1.read_namespaced_pod_status(pod_name, args.namespace)
-                    phase = pod_status.status.phase
+        # Monitor pod status (no timeout - wait indefinitely)
+        while True:
+            try:
+                pod_status = v1.read_namespaced_pod_status(pod_name, args.namespace)
+                phase = pod_status.status.phase
 
-                    if phase == 'Succeeded':
-                        # Stop monitoring
-                        monitor.stop()
-
-                        print("✅ Restore completed successfully")
-                        break
-                    elif phase == 'Failed':
-                        # Stop monitoring
-                        monitor.stop()
-
-                        # Get logs for error context
-                        try:
-                            logs = v1.read_namespaced_pod_log(pod_name, args.namespace)
-                        except ApiException:
-                            logs = "Could not retrieve pod logs"
-
-                        raise Exception(f"Restore pod failed:\n{logs}")
-
-                except ApiException as e:
+                if phase == 'Succeeded':
+                    # Stop monitoring
                     monitor.stop()
-                    print(f"⚠️  Error checking pod status: {e}", file=sys.stderr)
-                    raise
+                    print("✅ Restore completed successfully")
+                    restore_succeeded = True
+                    break
+                elif phase == 'Failed':
+                    # Stop monitoring
+                    monitor.stop()
 
-                time.sleep(5)
+                    # Get logs for error context
+                    try:
+                        logs = v1.read_namespaced_pod_log(pod_name, args.namespace)
+                        print(f"❌ Restore pod failed. Last logs:\n{logs}", file=sys.stderr)
+                    except ApiException:
+                        print("❌ Restore pod failed (could not retrieve logs)", file=sys.stderr)
 
-        except Exception as e:
-            print(f"Restore failed: {e}", file=sys.stderr)
-            # Cleanup
-            _cleanup_restore_resources(v1, args.namespace, pod_name, secret_name)
-            sys.exit(1)
+                    restore_succeeded = False
+                    break
 
-        # Step 6: Execute post-hooks (best-effort)
-        post_hooks = restore_config.get('postHooks', [])
-        if post_hooks:
-            print("Executing post-hooks...")
-            api_client = v1.api_client
-            result = execute_hooks(api_client, args.namespace, post_hooks, mode='post')
-            if not result['success']:
-                print(f"Warning: Some post-hooks failed: {result['failed']}", file=sys.stderr)
-            else:
-                print("Post-hooks completed successfully")
+            except ApiException as e:
+                monitor.stop()
+                print(f"⚠️  Error checking pod status: {e}", file=sys.stderr)
+                restore_succeeded = False
+                break
 
-        # Step 7: Cleanup pod + secret
-        _cleanup_restore_resources(v1, args.namespace, pod_name, secret_name)
-
-        print(f"\n✅ Restore complete: archive '{args.archive_id}' → PVC '{target_pvc}'")
+            time.sleep(5)
 
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+        restore_succeeded = False
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
+        restore_succeeded = False
+
+    finally:
+        # Step 6: Execute post-hooks (ONLY on success!)
+        if restore_succeeded:
+            post_hooks = restore_config.get('postHooks', [])
+            if post_hooks:
+                print("Executing post-hooks...")
+                try:
+                    api_client = v1.api_client
+                    result = execute_hooks(api_client, args.namespace, post_hooks, mode='post')
+                    if not result['success']:
+                        print(f"⚠️  Warning: Some post-hooks failed: {result['failed']}", file=sys.stderr)
+                    else:
+                        print("✅ Post-hooks completed successfully")
+                except Exception as e:
+                    print(f"⚠️  Warning: Post-hooks failed: {e}", file=sys.stderr)
+        else:
+            print("⚠️  Post-hooks NOT executed due to restore failure", file=sys.stderr)
+
+        # Step 7: Cleanup pod + secret (ALWAYS!)
+        if v1 and (pod_name or secret_name):
+            try:
+                _cleanup_restore_resources(v1, args.namespace, pod_name, secret_name)
+            except Exception as e:
+                print(f"⚠️  Warning: Cleanup failed: {e}", file=sys.stderr)
+
+    # Exit with appropriate code
+    if not restore_succeeded:
         sys.exit(1)
+
+    print(f"\n✅ Restore complete: archive '{args.archive_id}' → PVC '{target_pvc}'")
 
 
 def _cleanup_restore_resources(v1: client.CoreV1Api, namespace: str, pod_name: str, secret_name: str) -> None:
