@@ -139,6 +139,10 @@ def run_rsync(source: Path, target: Path) -> int:
 
     Uses rsync with --delete to ensure target matches source exactly.
 
+    Handles archives with data/ prefix (legacy backup format where /data was backed up
+    as a directory, not its contents). If archive has single top-level 'data' directory,
+    strips it automatically to restore contents directly to target root.
+
     Args:
         source: Source directory (mounted archive)
         target: Target directory (PVC to restore to)
@@ -149,8 +153,21 @@ def run_rsync(source: Path, target: Path) -> int:
     Raises:
         subprocess.CalledProcessError: If rsync fails
     """
-    # Ensure trailing slashes for rsync directory sync behavior
-    source_path = f"{source}/"
+    # Detect if archive has single top-level 'data' directory (legacy format)
+    # This happens when backup was created with `borg create repo::archive /data`
+    # instead of `cd /data && borg create repo::archive .`
+    data_dir = source / "data"
+    if data_dir.is_dir():
+        # Check if this is the ONLY item in the mount (exclude special borg files)
+        items = [item for item in source.iterdir() if not item.name.startswith('.')]
+        if len(items) == 1 and items[0].name == "data":
+            logger.info("Detected archive with 'data/' prefix - stripping for correct restore")
+            source_path = f"{data_dir}/"  # Use data/ subdirectory as source
+        else:
+            source_path = f"{source}/"
+    else:
+        source_path = f"{source}/"
+
     target_path = f"{target}/"
 
     logger.info(f"Starting rsync: {source_path} -> {target_path}")
