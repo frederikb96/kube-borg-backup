@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.1] - 2025-10-30
+
+### Fixed
+
+- **Branch Strategy:** Re-released v6.0.0 from `main` branch
+  - Original v6.0.0 was released from `dev` branch
+  - Used two-step merge strategy to bring v6.0.0 to `main`
+  - No code changes from v6.0.0 - purely organizational
+
 ## [6.0.0] - 2025-10-30
 
 ### Added
