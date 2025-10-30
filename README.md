@@ -80,7 +80,18 @@ Restore operations are fully supported via the `kbb` CLI tool:
 - **Pre/post hooks:** Scale deployments, execute commands during restore
 - **Configurable:** Custom image tags, storage classes, resource limits
 
-Install CLI: `pipx install git+https://github.com/frederikb96/kube-borg-backup.git#subdirectory=apps`
+### CLI Installation
+
+```bash
+# Install specific version (recommended)
+pipx install git+https://github.com/frederikb96/kube-borg-backup.git@v6.0.0#subdirectory=apps
+
+# Upgrade to latest version
+pipx upgrade kube-borg-backup-cli
+
+# Uninstall
+pipx uninstall kube-borg-backup-cli
+```
 
 See `kbb --help` for full command reference.
 

@@ -93,11 +93,12 @@ def restore_snapshot(args: argparse.Namespace) -> None:
     1. Load config and restore hooks
     2. Execute pre-hooks (fail-fast)
     3. Find snapshot and extract source PVC
-    4. Determine target PVC (explicit or in-place restore)
-    5. Create clone PVC from snapshot
-    6. Spawn rsync pod to copy data (waits indefinitely for completion)
-    7. Execute post-hooks (best-effort)
-    8. Cleanup clone PVC
+    4. Extract storage class from borgbackup config (same as used during backup)
+    5. Determine target PVC (explicit or in-place restore)
+    6. Create clone PVC from snapshot
+    7. Spawn rsync pod to copy data (waits indefinitely for completion)
+    8. Execute post-hooks (best-effort)
+    9. Cleanup clone PVC
 
     Args:
         args: CLI arguments with namespace, app, release, snapshot_id, optional pvc
@@ -159,23 +160,54 @@ def restore_snapshot(args: argparse.Namespace) -> None:
 
         print(f"Found snapshot '{args.snapshot_id}' from source PVC '{source_pvc}'", flush=True)
 
-        # Step 4: Determine target PVC
+        # Step 4: Extract storage class from borgbackup config
+        # This ensures we use the same storage class that was used during backup clone creation
+        try:
+            borg_config = find_app_config(args.namespace, args.app, args.release, config_type='borg')
+            storage_class = None
+
+            # Find the backup entry that matches our source PVC
+            if 'backups' in borg_config:
+                for backup in borg_config['backups']:
+                    if backup.get('pvc') == source_pvc:
+                        storage_class = backup.get('class')
+                        break
+
+            if not storage_class:
+                print(
+                    f"Warning: Could not find storage class in borgbackup config for PVC '{source_pvc}'",
+                    file=sys.stderr,
+                    flush=True
+                )
+                print("Clone PVC will use default storage class", flush=True)
+        except Exception as e:
+            print(
+                f"Warning: Could not load borgbackup config: {e}",
+                file=sys.stderr,
+                flush=True
+            )
+            print("Clone PVC will use default storage class", flush=True)
+            storage_class = None
+
+        # Step 5: Determine target PVC
         target_pvc = args.pvc if args.pvc else source_pvc
         print(f"Target PVC: {target_pvc}", flush=True)
 
-        # Step 5: Create clone PVC
+        # Step 6: Create clone PVC
         clone_pvc_name = f"{source_pvc}-restore-{int(time.time())}"
         print(f"Creating clone PVC '{clone_pvc_name}' from snapshot...", flush=True)
+        if storage_class:
+            print(f"Using storage class from borgbackup config: {storage_class}", flush=True)
 
         clone_result = create_clone_pvc(
             namespace=args.namespace,
             snapshot_name=args.snapshot_id,
             clone_pvc_name=clone_pvc_name,
-            storage_class='longhorn-temp'  # Use Immediate binding for testing
+            storage_class=storage_class
         )
         print(f"Clone PVC created: {clone_result['name']} (binding mode: {clone_result['binding_mode']})", flush=True)
 
-        # Step 6: Spawn rsync pod (no timeout - waits indefinitely)
+        # Step 7: Spawn rsync pod (no timeout - waits indefinitely)
         print(f"Spawning rsync pod to copy data to '{target_pvc}'...", flush=True)
         try:
             # Extract restore pod image config (REQUIRED)
