@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.2] - 2025-10-30
+
+### Fixed
+
+- **Borg Restore Hooks:** Fixed `borgbackup-config-secret.yaml` template missing restore section
+  - Template was not rendering restore hooks to borg-config Secret
+  - Caused borg restore to skip pre/post hook execution (leaving apps scaled down)
+  - Added restore section rendering (matching snapshot-config-secret.yaml pattern)
+  - Hooks now properly included: pod image config + preHooks + postHooks
+  - File: `charts/kube-borg-backup/templates/borgbackup-config-secret.yaml`
+
 ## [6.0.1] - 2025-10-30
 
 ### Fixed
