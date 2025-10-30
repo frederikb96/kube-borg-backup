@@ -6,7 +6,6 @@ Provides background thread-based monitoring of Kubernetes pods with:
 - Graceful shutdown via threading.Event
 """
 
-import sys
 import threading
 import time
 from kubernetes import client, watch
