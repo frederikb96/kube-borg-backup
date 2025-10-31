@@ -13,7 +13,7 @@ permissions:
   packages: write
 
 jobs:
-  # Step 1: Linting (must pass first)
+  # Step 1: Python linting (must pass first)
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -31,7 +31,7 @@ jobs:
       - name: Run ruff
         run: ruff check apps/
 
-  # Step 2: Type checking (must pass, runs in parallel with lint)
+  # Step 1: Type checking (runs in parallel with lint)
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -49,10 +49,23 @@ jobs:
       - name: Run mypy
         run: mypy --config-file mypy.ini
 
-  # Step 3: Helm chart release (only after lint and typecheck pass)
+  # Step 1: Helm chart linting (runs in parallel with lint and typecheck)
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with: { version: v3.17.0 }
+
+      - name: Lint Helm chart
+        run: helm lint charts/kube-borg-backup
+
+  # Step 2: Helm chart release (only after lint, typecheck, and helm-lint pass)
   release-helm:
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, helm-lint]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -73,10 +86,10 @@ jobs:
           CR_RELEASE_NAME_TEMPLATE: "v{{ .Version }}"
           CR_GENERATE_RELEASE_NOTES: true
 
-  # Step 4: Controller image (only after lint and typecheck pass)
+  # Step 2: Controller image (only after lint, typecheck, and helm-lint pass)
   build-controller:
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, helm-lint]
     steps:
       - uses: actions/checkout@v4
 
@@ -118,10 +131,10 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/kube-borg-backup/controller:${{ steps.ver.outputs.version }}
             ${{ steps.ver.outputs.is_prerelease == 'false' && format('ghcr.io/{0}/kube-borg-backup/controller:latest', github.repository_owner) || '' }}
 
-  # Step 5: Backup-runner image (only after lint and typecheck pass)
+  # Step 2: Backup-runner image (only after lint, typecheck, and helm-lint pass)
   build-backup-runner:
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, helm-lint]
     steps:
       - uses: actions/checkout@v4
 
