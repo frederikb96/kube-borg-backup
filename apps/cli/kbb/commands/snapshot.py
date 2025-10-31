@@ -194,6 +194,20 @@ def restore_snapshot(args: argparse.Namespace) -> None:
         target_pvc = args.pvc if args.pvc else source_pvc
         print(f"Target PVC: {target_pvc}", flush=True)
 
+        # Verify target PVC exists
+        try:
+            v1.read_namespaced_persistent_volume_claim(target_pvc, args.namespace)
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                print(
+                    f"Error: Target PVC '{target_pvc}' not found in namespace '{args.namespace}'",
+                    file=sys.stderr,
+                    flush=True
+                )
+                sys.exit(1)
+            print(f"Error checking PVC: {e}", file=sys.stderr, flush=True)
+            sys.exit(1)
+
         # Step 6: Create clone PVC
         clone_pvc_name = f"{source_pvc}-restore-{int(time.time())}"
         print(f"Creating clone PVC '{clone_pvc_name}' from snapshot...", flush=True)

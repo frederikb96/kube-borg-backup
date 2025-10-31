@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.5] - 2025-10-31
+
+### Fixed
+
+- **CLI Backup Restore PVC Selection:** Critical bug fix for wrong PVC selection
+  - **Bug:** `kbb backup restore kimai-data-2025-10-31-18-33-28` restored to wrong PVC (`kimai-mysql-pvc` instead of `kimai-data`)
+  - **Root cause:** Always used first backup's PVC (`backups[0]['pvc']`), ignored archive name
+  - **Fix:** Parse archive prefix from name, find matching backup config entry, use its `pvc` field
+  - Archive format: `{prefix}-YYYY-MM-DD-HH-MM-SS` where prefix = `backups[].name` from config
+  - Auto-detection message shows which prefix matched: `Auto-detected target PVC from archive prefix 'kimai-data': kimai-data`
+  - Clear error messages when archive doesn't match any configured backup (lists available backups)
+  - Supports custom `archivePrefix` (fails gracefully with helpful message)
+  - User can always override with `--pvc` flag
+  - File: `apps/cli/kbb/commands/backup.py` (lines 388-427)
+
+- **CLI PVC Validation:** Added early validation for both restore operations
+  - Verify target PVC exists before spawning pods or creating clone PVCs
+  - Prevents wasted time on non-existent targets
+  - Clear error messages: `Error: Target PVC 'name' not found in namespace 'ns'`
+  - Files: `apps/cli/kbb/commands/backup.py` (lines 417-425), `apps/cli/kbb/commands/snapshot.py` (lines 197-209)
+
 ## [6.0.4] - 2025-10-31
 
 ### Added

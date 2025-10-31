@@ -385,12 +385,44 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
         if args.pvc:
             target_pvc = args.pvc
         else:
-            # Use first backup's PVC name from config
+            # Auto-detect from archive name
+            # Archive format: {prefix}-YYYY-MM-DD-HH-MM-SS
+            # Prefix matches backups[].name field in config
             backups = config.get('backups', [])
             if not backups:
                 print("Error: No backups configured in config", file=sys.stderr)
                 sys.exit(1)
-            target_pvc = backups[0]['pvc']
+
+            # Extract archive prefix (remove timestamp suffix)
+            try:
+                archive_prefix = args.archive_id.rsplit('-', 3)[0]
+            except Exception:
+                print(f"Error: Invalid archive name format: '{args.archive_id}'", file=sys.stderr)
+                print("Expected format: prefix-YYYY-MM-DD-HH-MM-SS", file=sys.stderr)
+                sys.exit(1)
+
+            # Find matching backup config entry
+            matching_backups = [b for b in backups if b.get('name') == archive_prefix]
+
+            if not matching_backups:
+                print(f"Error: Archive '{args.archive_id}' doesn't match any configured backup", file=sys.stderr)
+                print(f"Archive prefix: '{archive_prefix}'", file=sys.stderr)
+                print(f"Available backups: {', '.join(b.get('name', 'N/A') for b in backups)}", file=sys.stderr)
+                print("Specify target PVC manually with --pvc flag", file=sys.stderr)
+                sys.exit(1)
+
+            target_pvc = matching_backups[0]['pvc']
+            print(f"Auto-detected target PVC from archive prefix '{archive_prefix}': {target_pvc}")
+
+        # Verify target PVC exists
+        try:
+            v1.read_namespaced_persistent_volume_claim(target_pvc, args.namespace)
+        except ApiException as e:
+            if e.status == 404:
+                print(f"Error: Target PVC '{target_pvc}' not found in namespace '{args.namespace}'", file=sys.stderr)
+                sys.exit(1)
+            print(f"Error checking PVC: {e}", file=sys.stderr)
+            sys.exit(1)
 
         print(f"Target PVC: {target_pvc}")
 
