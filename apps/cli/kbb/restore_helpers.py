@@ -203,9 +203,9 @@ def spawn_rsync_pod(
         sys.exit(143)  # 128 + 15 (SIGTERM)
 
     # Register signal handlers
-    old_sigterm = signal.signal(signal.SIGTERM, handle_signal_rsync)
-    old_sigint = signal.signal(signal.SIGINT, handle_signal_rsync)
-    old_sighup = signal.signal(signal.SIGHUP, handle_signal_rsync)
+    signal.signal(signal.SIGTERM, handle_signal_rsync)
+    signal.signal(signal.SIGINT, handle_signal_rsync)
+    signal.signal(signal.SIGHUP, handle_signal_rsync)
 
     # Start monitoring (events + logs in background threads)
     monitor = PodMonitor(v1, pod_name, namespace)
