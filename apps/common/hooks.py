@@ -1,5 +1,18 @@
-"""Hook system resource parsing utilities."""
+"""Common hook system for kube-borg-backup.
 
+This module provides a unified hook execution system used by:
+- CLI restore operations (snapshot restore, borg restore)
+- Future: Controllers (if hooks needed in-cluster)
+
+Supported hook types:
+- exec: Execute command in pod via Kubernetes API
+- scale: Scale deployment/statefulset replicas
+- shell: Execute local shell command (restore-only, not available in-cluster)
+- wait: Wait for resource condition (future)
+- http: HTTP webhook notifications (future)
+"""
+
+import subprocess
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from kubernetes import client
@@ -268,6 +281,78 @@ def execute_scale_hook(
     return result.spec.replicas
 
 
+def execute_shell_hook(
+    command: list[str],
+    timeout: int | None = None
+) -> dict[str, str]:
+    """Execute local shell command.
+
+    This hook type is ONLY available in restore operations executed by the CLI
+    (local context). It is NOT available in-cluster (controllers cannot execute
+    local commands).
+
+    Use cases:
+    - Flux GitOps operations: flux suspend/resume helmrelease
+    - Local notifications: Send alerts, update monitoring
+    - External integrations: Trigger CI/CD, update DNS records
+    - Safety operations: Create backups before restore
+
+    Args:
+        command: Command to execute as list (e.g., ["flux", "suspend", "hr", "app"])
+        timeout: Optional timeout in seconds (default: 300)
+
+    Returns:
+        Dict with 'stdout' and 'stderr' keys
+
+    Raises:
+        Exception: If command returns non-zero exit code
+
+    Examples:
+        >>> # Suspend Flux HelmRelease before restore
+        >>> result = execute_shell_hook(["flux", "suspend", "helmrelease", "myapp", "-n", "default"])
+        >>> print(result['stdout'])
+        helmrelease.flux.toolkit.fluxcd.io/myapp suspended
+
+        >>> # Send notification
+        >>> result = execute_shell_hook(["curl", "-X", "POST", "https://hooks.slack.com/...", "-d", "..."])
+    """
+    if timeout is None:
+        timeout = 300
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False
+        )
+    except subprocess.TimeoutExpired as e:
+        raise Exception(
+            f"Shell command timed out after {timeout}s\n"
+            f"Command: {' '.join(command)}"
+        ) from e
+    except Exception as e:
+        raise Exception(
+            f"Failed to execute shell command: {e}\n"
+            f"Command: {' '.join(command)}"
+        ) from e
+
+    # Check exit code
+    if result.returncode != 0:
+        raise Exception(
+            f"Shell command failed with exit code {result.returncode}\n"
+            f"Command: {' '.join(command)}\n"
+            f"Stdout: {result.stdout}\n"
+            f"Stderr: {result.stderr}"
+        )
+
+    return {
+        'stdout': result.stdout,
+        'stderr': result.stderr
+    }
+
+
 def execute_hooks(
     api_client: client.ApiClient,
     namespace: str,
@@ -521,6 +606,13 @@ def _execute_single_hook(
             namespace,
             resource_string,
             hook['replicas']
+        )
+
+    elif hook_type == 'shell':
+        # Execute local shell command
+        return execute_shell_hook(
+            hook['command'],
+            hook.get('timeout')
         )
 
     else:

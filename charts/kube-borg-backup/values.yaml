@@ -223,6 +223,17 @@ apps:
       #      command: ["pg_dump", "-Fc", "/backup/dump.sql"]
       #      parallel: false             # Optional: Execute in parallel with other parallel hooks
       #
+      # 3. shell: Execute local shell command (restore-only, CLI context)
+      #    - type: shell
+      #      command: ["flux", "suspend", "helmrelease", "myapp", "-n", "default"]
+      #      timeout: 300                # Optional: Timeout in seconds (default: 300)
+      #    NOTE: This hook type is ONLY available in restore operations executed by the CLI.
+      #          It is NOT available in-cluster (controllers cannot execute local commands).
+      #    Common use cases:
+      #    - Flux GitOps: flux suspend/resume helmrelease
+      #    - Notifications: Send alerts before/after restore
+      #    - External integrations: Trigger CI/CD, update DNS
+      #
       # Common use cases:
       # - Scale down application deployments to prevent write conflicts
       # - Stop database write activity (set read-only mode)
@@ -248,6 +259,14 @@ apps:
       #     deployment: myapp-worker
       #     replicas: 0
       #     parallel: true
+      #
+      # Example: Flux GitOps suspend before restore (CLI only)
+      # preHooks:
+      #   - type: shell
+      #     command: ["flux", "suspend", "helmrelease", "myapp", "-n", "default"]
+      #   - type: scale
+      #     deployment: myapp
+      #     replicas: 0
       preHooks: []
       #  - type: scale
       #    deployment: myapp
@@ -260,7 +279,7 @@ apps:
       # - Use for non-critical cleanup operations (scale up deployments, notifications)
       # - Hooks are executed in parallel if grouped with 'parallel: true'
       #
-      # Hook types: Same as preHooks (scale, exec)
+      # Hook types: Same as preHooks (scale, exec, shell)
       #
       # Common use cases:
       # - Scale application deployments back up
@@ -284,6 +303,14 @@ apps:
       #     pod: postgres-0
       #     container: postgres
       #     command: ["/bin/bash", "-c", "psql -U postgres -c 'VACUUM ANALYZE;'"]
+      #
+      # Example: Flux GitOps resume after restore (CLI only)
+      # postHooks:
+      #   - type: scale
+      #     deployment: myapp
+      #     replicas: 1
+      #   - type: shell
+      #     command: ["flux", "resume", "helmrelease", "myapp", "-n", "default"]
       postHooks: []
       #  - type: scale
       #    deployment: myapp

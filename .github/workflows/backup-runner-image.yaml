@@ -48,7 +48,8 @@ jobs:
       - name: Build & Push Multi-Arch Image
         uses: docker/build-push-action@v4
         with:
-          context: apps/backup-runner
+          context: apps
+          file: apps/Dockerfile.backup-runner
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |

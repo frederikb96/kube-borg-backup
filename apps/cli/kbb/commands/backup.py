@@ -248,7 +248,7 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
     Args:
         args: CLI arguments with namespace, app, release, archive_id, optional pvc
     """
-    from kbb.hooks import execute_hooks
+    from common.hooks import execute_hooks
 
     # Track resources for cleanup
     v1 = None

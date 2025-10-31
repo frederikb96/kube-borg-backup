@@ -5,6 +5,7 @@ import sys
 from typing import Any
 from kubernetes import client
 from kbb.utils import find_app_config, load_kube_client
+from common.hooks import execute_hooks
 
 
 def handle_snap(args: argparse.Namespace) -> None:
@@ -105,7 +106,6 @@ def restore_snapshot(args: argparse.Namespace) -> None:
     """
     import time
     from kbb.restore_helpers import create_clone_pvc, spawn_rsync_pod
-    from kbb.hooks import execute_hooks
 
     try:
         # Step 1: Load config
