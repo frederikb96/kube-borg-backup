@@ -83,15 +83,18 @@ Restore operations are fully supported via the `kbb` CLI tool:
 ### CLI Installation
 
 ```bash
-# Install specific version (recommended)
-pipx install git+https://github.com/frederikb96/kube-borg-backup.git@v6.0.0#subdirectory=apps
+# -force for upgrade if already installed
+# Install specific version (recommended - pin to release tag)
+pipx install --force git+https://github.com/frederikb96/kube-borg-backup.git@vX.Y.Z#subdirectory=apps
 
-# Upgrade to latest version
-pipx upgrade kube-borg-backup-cli
+# OR install latest main (development version)
+pipx install --force git+https://github.com/frederikb96/kube-borg-backup.git#subdirectory=apps
 
 # Uninstall
 pipx uninstall kube-borg-backup-cli
 ```
+
+Replace `vX.Y.Z` with desired version from [releases](https://github.com/frederikb96/kube-borg-backup/releases).
 
 See `kbb --help` for full command reference.
 

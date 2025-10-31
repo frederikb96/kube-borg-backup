@@ -1,5 +1,6 @@
 """Helper functions for restore operations."""
 
+import signal
 import sys
 import time
 from typing import Any
@@ -194,6 +195,18 @@ def spawn_rsync_pod(
 
     print("⏳ Waiting for rsync pod to complete...", flush=True)
 
+    # Setup signal handling for graceful cleanup
+    def handle_signal_rsync(signum, frame):
+        """Handle termination signals - cleanup rsync pod."""
+        print("\nStopping rsync, cleaning up pod (up to 30s)...", file=sys.stderr, flush=True)
+        _cleanup_rsync_with_grace_period(v1, namespace, pod_name)
+        sys.exit(143)  # 128 + 15 (SIGTERM)
+
+    # Register signal handlers
+    old_sigterm = signal.signal(signal.SIGTERM, handle_signal_rsync)
+    old_sigint = signal.signal(signal.SIGINT, handle_signal_rsync)
+    old_sighup = signal.signal(signal.SIGHUP, handle_signal_rsync)
+
     # Start monitoring (events + logs in background threads)
     monitor = PodMonitor(v1, pod_name, namespace)
     monitor.start()
@@ -242,3 +255,58 @@ def spawn_rsync_pod(
             raise
 
         time.sleep(5)
+
+
+def _cleanup_rsync_with_grace_period(v1: client.CoreV1Api, namespace: str, pod_name: str) -> None:
+    """Cleanup rsync pod with 30s grace period, force delete if needed.
+
+    Polls for pod deletion (404 from API) which is the only reliable signal
+    that Kubernetes has fully removed the pod object.
+
+    Args:
+        v1: CoreV1Api client
+        namespace: Kubernetes namespace
+        pod_name: Pod name to delete
+    """
+    # Delete pod with default grace period (30s in Kubernetes)
+    try:
+        print(f"Deleting rsync pod '{pod_name}'...", file=sys.stderr, flush=True)
+        v1.delete_namespaced_pod(pod_name, namespace)
+    except Exception as e:
+        print(f"Warning: Failed to delete pod: {e}", file=sys.stderr, flush=True)
+        return
+
+    # Wait up to 30 seconds for pod to terminate (poll for 404)
+    start_time = time.time()
+    pod_terminated = False
+
+    while time.time() - start_time < 30:
+        try:
+            v1.read_namespaced_pod_status(pod_name, namespace)
+            # Pod still exists in API - keep waiting
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                # Pod fully deleted from API - SUCCESS
+                pod_terminated = True
+                elapsed = int(time.time() - start_time)
+                print(f"Rsync pod terminated gracefully after {elapsed}s", file=sys.stderr, flush=True)
+                break
+            # Other API error - log and retry
+            print(f"Warning: API error checking pod status: {e}", file=sys.stderr, flush=True)
+
+        time.sleep(1)
+
+    # Force delete if pod didn't terminate
+    if not pod_terminated:
+        try:
+            print("Warning: Rsync pod did not terminate after 30s, force deleting...", file=sys.stderr, flush=True)
+            v1.delete_namespaced_pod(
+                pod_name,
+                namespace,
+                grace_period_seconds=0,
+                propagation_policy='Background'
+            )
+            print(f"Warning: Rsync pod force deleted. Check for stale resources in namespace {namespace}",
+                  file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"Warning: Force delete failed: {e}", file=sys.stderr, flush=True)

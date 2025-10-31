@@ -1,6 +1,7 @@
 """Snapshot restore commands."""
 
 import argparse
+import signal
 import sys
 from typing import Any
 from kubernetes import client
@@ -207,6 +208,19 @@ def restore_snapshot(args: argparse.Namespace) -> None:
         )
         print(f"Clone PVC created: {clone_result['name']} (binding mode: {clone_result['binding_mode']})", flush=True)
 
+        # Setup signal handling for graceful cleanup of clone PVC
+        def handle_signal_snapshot(signum, frame):
+            """Handle termination signals - cleanup clone PVC."""
+            print("\nStopping snapshot restore, cleaning up clone PVC...", file=sys.stderr, flush=True)
+            _cleanup_clone_pvc(v1, args.namespace, clone_pvc_name)
+            print("Cleanup complete", file=sys.stderr, flush=True)
+            sys.exit(143)  # 128 + 15 (SIGTERM)
+
+        # Register signal handlers
+        old_sigterm = signal.signal(signal.SIGTERM, handle_signal_snapshot)
+        old_sigint = signal.signal(signal.SIGINT, handle_signal_snapshot)
+        old_sighup = signal.signal(signal.SIGHUP, handle_signal_snapshot)
+
         # Step 7: Spawn rsync pod (no timeout - waits indefinitely)
         print(f"Spawning rsync pod to copy data to '{target_pvc}'...", flush=True)
         try:
@@ -230,9 +244,18 @@ def restore_snapshot(args: argparse.Namespace) -> None:
 
         except Exception as e:
             print(f"Restore failed: {e}", file=sys.stderr, flush=True)
+            # Restore original signal handlers before cleanup
+            signal.signal(signal.SIGTERM, old_sigterm)
+            signal.signal(signal.SIGINT, old_sigint)
+            signal.signal(signal.SIGHUP, old_sighup)
             # Cleanup clone PVC
             _cleanup_clone_pvc(v1, args.namespace, clone_pvc_name)
             sys.exit(1)
+
+        # Restore original signal handlers after successful rsync
+        signal.signal(signal.SIGTERM, old_sigterm)
+        signal.signal(signal.SIGINT, old_sigint)
+        signal.signal(signal.SIGHUP, old_sighup)
 
         # Step 7: Execute post-hooks (best-effort)
         post_hooks = restore_config.get('postHooks', [])

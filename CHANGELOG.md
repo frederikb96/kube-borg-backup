@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.4] - 2025-10-31
+
+### Added
+
+- **CLI Signal Handling:** Complete SIGTERM/SIGINT/SIGHUP handling for CLI operations
+  - Graceful cleanup of spawned pods on Ctrl+C or termination
+  - 30-second grace period for pod termination, force delete fallback
+  - Applies to all 3 operations: `kbb backup list`, `kbb backup restore`, `kbb snapshot restore`
+  - User-friendly progress messages during cleanup
+  - Two-layer cleanup synergy: CLI (30s) + backup-runner (20s) = robust termination
+  - Exit code 143 for signal-induced termination
+  - Files: `apps/cli/kbb/commands/backup.py`, `apps/cli/kbb/commands/snapshot.py`, `apps/cli/kbb/restore_helpers.py`
+
+- **Backup-Runner Signal Handling:** SIGTERM/SIGINT handling for list and restore operations
+  - `list.py`: Catches SIGTERM, sends SIGINT to borg, waits 20s, force kill + break-lock fallback
+  - `restore.py`: Catches SIGTERM, terminates rsync + borg mount, unmounts FUSE, breaks locks if needed
+  - Prevents stale borg locks on pod termination
+  - Matches backup.py signal handling pattern (already present)
+  - Files: `apps/backup-runner/list.py`, `apps/backup-runner/restore.py`
+
+### Improved
+
+- **Pod Termination Detection:** Simplified to Kubernetes best practices (KISS principle)
+  - Changed from checking `deletionTimestamp` (unreliable) to polling for 404 from API
+  - 404 is the only definitive signal that Kubernetes fully removed pod
+  - Removed ~30 lines of unnecessary complexity
+  - Better error logging for non-404 API errors
+  - Matches official Kubernetes Python client documentation
+  - Applies to all 3 CLI cleanup functions
+
+### Changed
+
+- **README:** CLI installation instructions updated
+  - Removed hardcoded version `v6.0.0`, now uses pattern `@vX.Y.Z`
+  - Added alternative: install from `main` branch (development version)
+  - Fixed upgrade command: use `pipx install --force` (git installs don't support `pipx upgrade`)
+  - Added link to releases page
+  - README now version-agnostic
+
 ## [6.0.3] - 2025-10-31
 
 ### Fixed

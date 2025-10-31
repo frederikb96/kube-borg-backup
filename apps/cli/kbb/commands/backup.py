@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import signal
 import sys
 import time
 from typing import Any
@@ -112,6 +113,18 @@ def list_borg_archives(args: argparse.Namespace) -> None:
                 pass
             sys.exit(1)
 
+        # Setup signal handling for graceful cleanup
+        def handle_signal(signum, frame):
+            """Handle termination signals - cleanup spawned resources."""
+            print("\nStopping operation, cleaning up resources (up to 30s)...", file=sys.stderr, flush=True)
+            cleanup_with_grace_period(v1, args.namespace, pod_name, secret_name)
+            sys.exit(143)  # 128 + 15 (SIGTERM)
+
+        # Register signal handlers
+        old_sigterm = signal.signal(signal.SIGTERM, handle_signal)
+        old_sigint = signal.signal(signal.SIGINT, handle_signal)
+        old_sighup = signal.signal(signal.SIGHUP, handle_signal)
+
         # Wait for pod completion (timeout 120s)
         timeout = 120
         start_time = time.time()
@@ -177,6 +190,11 @@ def list_borg_archives(args: argparse.Namespace) -> None:
             print(f"Raw logs:\n{logs}", file=sys.stderr)
             cleanup_list_resources(v1, args.namespace, pod_name, secret_name)
             sys.exit(1)
+
+        # Restore original signal handlers
+        signal.signal(signal.SIGTERM, old_sigterm)
+        signal.signal(signal.SIGINT, old_sigint)
+        signal.signal(signal.SIGHUP, old_sighup)
 
         # Cleanup pod and secret
         cleanup_list_resources(v1, args.namespace, pod_name, secret_name)
@@ -245,6 +263,68 @@ def cleanup_list_resources(v1: client.CoreV1Api, namespace: str, pod_name: str, 
 
     try:
         v1.delete_namespaced_secret(secret_name, namespace)
+    except Exception:
+        pass  # Ignore cleanup errors
+
+
+def cleanup_with_grace_period(v1: client.CoreV1Api, namespace: str, pod_name: str, secret_name: str) -> None:
+    """Cleanup resources with 30s grace period, force delete if needed.
+
+    Polls for pod deletion (404 from API) which is the only reliable signal
+    that Kubernetes has fully removed the pod object.
+
+    Args:
+        v1: CoreV1Api client
+        namespace: Kubernetes namespace
+        pod_name: Pod name to delete
+        secret_name: Secret name to delete
+    """
+    # Delete pod with default grace period (30s in Kubernetes)
+    try:
+        print(f"Deleting pod '{pod_name}'...", file=sys.stderr, flush=True)
+        v1.delete_namespaced_pod(pod_name, namespace)
+    except Exception as e:
+        print(f"Warning: Failed to delete pod: {e}", file=sys.stderr, flush=True)
+
+    # Wait up to 30 seconds for pod to terminate (poll for 404)
+    start_time = time.time()
+    pod_terminated = False
+
+    while time.time() - start_time < 30:
+        try:
+            v1.read_namespaced_pod_status(pod_name, namespace)
+            # Pod still exists in API - keep waiting
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                # Pod fully deleted from API - SUCCESS
+                pod_terminated = True
+                elapsed = int(time.time() - start_time)
+                print(f"Pod terminated gracefully after {elapsed}s", file=sys.stderr, flush=True)
+                break
+            # Other API error - log and retry
+            print(f"Warning: API error checking pod status: {e}", file=sys.stderr, flush=True)
+
+        time.sleep(1)
+
+    # Force delete if pod didn't terminate
+    if not pod_terminated:
+        try:
+            print("Warning: Pod did not terminate after 30s, force deleting...", file=sys.stderr, flush=True)
+            v1.delete_namespaced_pod(
+                pod_name,
+                namespace,
+                grace_period_seconds=0,
+                propagation_policy='Background'
+            )
+            print(f"Warning: Pod force deleted. Check for stale resources in namespace {namespace}",
+                  file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"Warning: Force delete failed: {e}", file=sys.stderr, flush=True)
+
+    # Delete secret
+    try:
+        v1.delete_namespaced_secret(secret_name, namespace)
+        print("Secret deleted", file=sys.stderr, flush=True)
     except Exception:
         pass  # Ignore cleanup errors
 
@@ -392,6 +472,18 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
         v1.create_namespaced_pod(args.namespace, pod)
         print("Borg restore pod created")
 
+        # Setup signal handling for graceful cleanup
+        def handle_signal_restore(signum, frame):
+            """Handle termination signals - cleanup spawned resources."""
+            print("\nStopping restore, cleaning up resources (up to 30s)...", file=sys.stderr, flush=True)
+            _cleanup_restore_with_grace_period(v1, args.namespace, pod_name, secret_name)
+            sys.exit(143)  # 128 + 15 (SIGTERM)
+
+        # Register signal handlers
+        old_sigterm = signal.signal(signal.SIGTERM, handle_signal_restore)
+        old_sigint = signal.signal(signal.SIGINT, handle_signal_restore)
+        old_sighup = signal.signal(signal.SIGHUP, handle_signal_restore)
+
         # Start monitoring (events + logs in background threads)
         monitor = PodMonitor(v1, pod_name, args.namespace)
         monitor.start()
@@ -429,6 +521,11 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
                 break
 
             time.sleep(5)
+
+        # Restore original signal handlers
+        signal.signal(signal.SIGTERM, old_sigterm)
+        signal.signal(signal.SIGINT, old_sigint)
+        signal.signal(signal.SIGHUP, old_sighup)
 
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -487,5 +584,67 @@ def _cleanup_restore_resources(v1: client.CoreV1Api, namespace: str, pod_name: s
     try:
         v1.delete_namespaced_secret(secret_name, namespace)
         print(f"Cleaned up restore secret: {secret_name}")
+    except Exception:
+        pass  # Ignore cleanup errors
+
+
+def _cleanup_restore_with_grace_period(v1: client.CoreV1Api, namespace: str, pod_name: str, secret_name: str) -> None:
+    """Cleanup restore resources with 30s grace period, force delete if needed.
+
+    Polls for pod deletion (404 from API) which is the only reliable signal
+    that Kubernetes has fully removed the pod object.
+
+    Args:
+        v1: CoreV1Api client
+        namespace: Kubernetes namespace
+        pod_name: Pod name to delete
+        secret_name: Secret name to delete
+    """
+    # Delete pod with default grace period (30s in Kubernetes)
+    try:
+        print(f"Deleting restore pod '{pod_name}'...", file=sys.stderr, flush=True)
+        v1.delete_namespaced_pod(pod_name, namespace)
+    except Exception as e:
+        print(f"Warning: Failed to delete pod: {e}", file=sys.stderr, flush=True)
+
+    # Wait up to 30 seconds for pod to terminate (poll for 404)
+    start_time = time.time()
+    pod_terminated = False
+
+    while time.time() - start_time < 30:
+        try:
+            v1.read_namespaced_pod_status(pod_name, namespace)
+            # Pod still exists in API - keep waiting
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                # Pod fully deleted from API - SUCCESS
+                pod_terminated = True
+                elapsed = int(time.time() - start_time)
+                print(f"Restore pod terminated gracefully after {elapsed}s", file=sys.stderr, flush=True)
+                break
+            # Other API error - log and retry
+            print(f"Warning: API error checking pod status: {e}", file=sys.stderr, flush=True)
+
+        time.sleep(1)
+
+    # Force delete if pod didn't terminate
+    if not pod_terminated:
+        try:
+            print("Warning: Restore pod did not terminate after 30s, force deleting...", file=sys.stderr, flush=True)
+            v1.delete_namespaced_pod(
+                pod_name,
+                namespace,
+                grace_period_seconds=0,
+                propagation_policy='Background'
+            )
+            print(f"Warning: Restore pod force deleted. Check for stale resources in namespace {namespace}",
+                  file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"Warning: Force delete failed: {e}", file=sys.stderr, flush=True)
+
+    # Delete secret
+    try:
+        v1.delete_namespaced_secret(secret_name, namespace)
+        print("Restore secret deleted", file=sys.stderr, flush=True)
     except Exception:
         pass  # Ignore cleanup errors
