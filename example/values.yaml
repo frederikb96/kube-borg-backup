@@ -1,263 +1,92 @@
-## Example configuration for Immich backup with PostgreSQL database consistency
-##
-## This demonstrates a real-world production setup with:
-## - PostgreSQL pg_backup_start/stop hooks for database consistency
-## - Multiple PVCs (database, backend uploads, model cache)
-## - Tiered retention policy for snapshots and borg archives
-## - BorgBackup configuration for offsite backup to BorgBase
-## - Proper timeouts for large datasets
-##
-
-## ServiceAccount for RBAC permissions
-serviceAccount:
-  name: kbb
+# Example configuration for kube-borg-backup
+# This shows a complete working example with PostgreSQL database backups
 
 ## =============================================================================
 ## Borg Repository Definitions
 ## =============================================================================
 borgRepos:
-  - name: borgbase-immich
-    repo: "ssh://user@user.repo.borgbase.com/./repo"
+  - name: borgbase-main
+    repo: "ssh://user@server.borgbase.com/./repo"
     passphrase: "your-secure-borg-passphrase-here"
     privateKey: |
       -----BEGIN OPENSSH PRIVATE KEY-----
-      YOUR_SSH_PRIVATE_KEY_HERE
-      Replace this with your actual BorgBase SSH private key
-      Generate with: ssh-keygen -t ed25519 -C "immich-backup"
-      Add public key to BorgBase repository settings
+      your-ssh-private-key-here
       -----END OPENSSH PRIVATE KEY-----
-
-## =============================================================================
-## Snapshot Defaults
-## =============================================================================
-snapshot:
-  image:
-    repository: ghcr.io/frederikb96/kube-borg-backup/controller
-    tag: latest
-    pullPolicy: IfNotPresent
-
-  # Image for rsync helper pods (snapshot restore operations)
-  pod:
-    image:
-      repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
-      tag: latest
-      pullPolicy: IfNotPresent
-
-  cron:
-    schedule: "0 * * * *"
-    startingDeadlineSeconds: 60
-    successfulJobsHistoryLimit: 1
-    failedJobsHistoryLimit: 1
-
-  timeout: 600
-
-  retention:
-    hourly: 24
-    daily: 7
-    weekly: 4
-    monthly: 3
-
-## =============================================================================
-## BorgBackup Defaults
-## =============================================================================
-borgbackup:
-  image:
-    repository: ghcr.io/frederikb96/kube-borg-backup/controller
-    tag: latest
-    pullPolicy: IfNotPresent
-
-  cron:
-    schedule: "30 */6 * * *"
-    startingDeadlineSeconds: 300
-    successfulJobsHistoryLimit: 1
-    failedJobsHistoryLimit: 1
-
-  timeout: 23400
-
-  pod:
-    image:
-      repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
-      tag: latest
-      pullPolicy: IfNotPresent
-    privileged: true
-    resources:
-      requests:
-        memory: "1Gi"
-        cpu: "500m"
-
-  retention:
-    hourly: 24
-    daily: 7
-    weekly: 4
-    monthly: 3
-    yearly: 1
-
-## =============================================================================
-## Restore Configuration (v6.0.0+)
-## =============================================================================
-restore:
-  # RBAC extensions for restore operations
-  rbac:
-    additionalRules: []
 
 ## =============================================================================
 ## Applications
 ## =============================================================================
 apps:
-  - name: immich
-    namespace: immich
+  - name: test
+    namespace: default
     createNamespace: false
 
-    # ==========================================================================
-    # Snapshot Configuration for Immich
-    # ==========================================================================
-    # Creates VolumeSnapshots for PVCs with tiered retention policy
-    # Supports pre/post hooks for database consistency
-    #
-    # IMPORTANT NOTES:
-    # - Pre-hooks run SEQUENTIALLY before snapshots. If ANY fails, process aborts.
-    # - Snapshots are created IN PARALLEL for speed.
-    # - Post-hooks run SEQUENTIALLY after snapshots. They ALWAYS run, even on failure.
-    # - Post-hooks also run on pod termination (SIGTERM) for safety.
+    # Snapshot configuration
     snapshot:
       pvcs:
         # PostgreSQL database with consistency hooks
-        # IMPORTANT: Hooks ensure database is in consistent state for backup
-        - name: immich-db-pvc
+        - name: postgres-data
           snapshotClass: longhorn
           hooks:
-            # Pre-hooks: Run BEFORE snapshots (executed sequentially, fail-fast)
-            # Use pod-exec to run commands in pods for database consistency
             pre:
-              # Put PostgreSQL into backup mode before snapshot
-              # Handles both PG <15 (pg_start_backup) and PG >=15 (pg_backup_start)
-              - pod: immich-postgres-0
-                container: postgres  # Optional: specify container if pod has multiple
-                command:
-                  - /bin/bash
-                  - -c
-                  - |
-                    VERSION_NUM=$(psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;")
-                    if [ "$VERSION_NUM" -ge 150000 ]; then
-                      psql -U "$DB_USERNAME" -c "SELECT pg_backup_start(label => 'immich_snap', fast => true);"
-                    else
-                      psql -U "$DB_USERNAME" -c "SELECT pg_start_backup('immich_snap', true);"
-                    fi
-            # Post-hooks: Run AFTER snapshots (executed sequentially, ALWAYS run)
-            # These also run on pod termination (SIGTERM) for safety
-            post:
-              # Exit backup mode after snapshot
-              # ALWAYS runs, even if snapshot fails (SIGTERM handler ensures this)
-              - pod: immich-postgres-0
+              - pod: postgres-0
                 container: postgres
                 command:
-                  - /bin/bash
+                  - /bin/sh
                   - -c
                   - |
-                    VERSION_NUM=$(psql -U "$DB_USERNAME" -tAc "SHOW server_version_num;")
-                    if [ "$VERSION_NUM" -ge 150000 ]; then
-                      psql -U "$DB_USERNAME" -c "SELECT pg_backup_stop(wait_for_archive => true);" || echo "No backup in progress"
-                    else
-                      psql -U "$DB_USERNAME" -c "SELECT pg_stop_backup(true);" || echo "No backup in progress"
-                    fi
+                    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT pg_backup_start('snapshot-test', true);"
+            post:
+              - pod: postgres-0
+                container: postgres
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT pg_backup_stop(true);" || echo "No backup in progress"
 
-        # Backend upload data (no hooks needed for file-based storage)
-        - name: immich-backend-pvc
-          snapshotClass: zfs-generic-smb-csi
-
-        # Model cache (ML models for face recognition, etc.)
-        - name: immich-model-cache-pvc
-          snapshotClass: longhorn
-
-    # ==========================================================================
-    # BorgBackup Configuration for Immich
-    # ==========================================================================
-    # Backs up VolumeSnapshots to BorgBackup repository (offsite storage)
-    #
-    # How it works:
-    # 1. Creates clone PVCs from latest VolumeSnapshots (parallel for speed)
-    # 2. Spawns ephemeral borg pods to backup each clone to remote repository
-    # 3. Cleans up temporary resources (clone PVCs, pods, secrets)
-    # 4. Backups run SEQUENTIALLY (borg repo only supports one writer)
+    # BorgBackup configuration
     borgbackup:
-      # Borg repository reference (defined in borgRepos section above)
-      borgRepo: borgbase-immich
-
-      # Borg cache PVC (improves backup performance, REQUIRED and must be unique per-app)
+      borgRepo: borgbase-main
       cache:
         create: true
-        pvcName: immich-borg-cache
-        storageClassName: openebs-hostpath
-        size: 5Gi
-
-      # PVCs to backup (must have corresponding snapshots created above)
-      # Each entry creates a clone PVC from the latest snapshot and backs it up
+        pvcName: test-borg-cache
+        storageClassName: local-path
+        size: 2Gi
       pvcs:
-        # Database backup
-        # Archive name will be: immich-db-YYYY-MM-DD-HH-MM-SS
-        - name: db
-          pvc: immich-db-pvc  # Must match snapshot PVC name
-          # Storage class for the CLONE PVC (not the original PVC)
-          # IMPORTANT: Use storage class with WaitForFirstConsumer binding mode
-          #            and "Delete" reclaim policy for automatic cleanup
+        # Archive will be named "test-postgres-data-TIMESTAMP"
+        - name: postgres-data
+          pvc: postgres-data
           class: longhorn-normal
-          # Timeout for this specific backup (seconds) - controls both:
-          # 1. Pod activeDeadlineSeconds: How long the borg pod is allowed to run
-          # 2. Borg --lock-wait: How long borg waits for repository lock
-          # Example: 7200 = 2 hours for large database backup
-          timeout: 7200
-          # Wait up to 5min for clone PVC to bind (WaitForFirstConsumer storage classes)
+          timeout: 3600
           cloneBindTimeout: 300
 
-        # Backend uploads (potentially very large - photos/videos)
-        # Archive name will be: immich-backend-YYYY-MM-DD-HH-MM-SS
-        - name: backend
-          pvc: immich-backend-pvc
-          class: zfs-generic-smb-csi
-          # Longer timeout for large media library
-          timeout: 10800  # 3 hours
-          cloneBindTimeout: 300
-
-        # Model cache (smaller, faster)
-        # Archive name will be: immich-model-cache-YYYY-MM-DD-HH-MM-SS
-        - name: model-cache
-          pvc: immich-model-cache-pvc
-          class: longhorn-normal
-          # Shorter timeout for small cache
-          timeout: 1800  # 30 minutes
-          cloneBindTimeout: 180
-
-    # ==========================================================================
-    # Restore Configuration for Immich (v6.0.0+)
-    # ==========================================================================
-    # Pre/post hooks executed during restore operations
+    # Restore hooks
     restore:
-      # Pre-restore hooks: Scale down Immich components BEFORE restore
-      # This prevents write conflicts during restore operation
-      # Parallel execution for faster scale-down (all components stop simultaneously)
       preHooks:
+        # Optional: Suspend Flux GitOps during restore
+        - type: shell
+          command: ["flux", "suspend", "kustomization", "flux-system", "--namespace", "flux-system"]
+        # Scale down application (prevent writes during restore)
         - type: scale
-          deployment: immich-server
+          deployment: postgrest
           replicas: 0
-          parallel: true
+        # Scale down database
         - type: scale
-          deployment: immich-microservices
+          statefulset: postgres
           replicas: 0
-          parallel: true
-        - type: scale
-          deployment: immich-machine-learning
-          replicas: 0
-          parallel: true
-
-      # Post-restore hooks: Scale up Immich components AFTER restore
-      # Sequential execution ensures proper startup order (database first, then services)
+        # Wait for graceful shutdown
+        - type: shell
+          command: ["sleep", "10"]
       postHooks:
+        # Scale database back up
         - type: scale
-          deployment: immich-server
+          statefulset: postgres
           replicas: 1
+        # Scale application back up
         - type: scale
-          deployment: immich-microservices
+          deployment: postgrest
           replicas: 1
-        - type: scale
-          deployment: immich-machine-learning
-          replicas: 1
+        # Optional: Resume Flux GitOps
+        - type: shell
+          command: ["flux", "resume", "kustomization", "flux-system", "--namespace", "flux-system"]

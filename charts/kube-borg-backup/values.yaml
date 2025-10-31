@@ -1,50 +1,45 @@
+# Default configuration for kube-borg-backup
+# This file contains sensible defaults. Add your applications in the apps[] list.
+
 ## =============================================================================
 ## Borg Repository Definitions (Reusable)
 ## =============================================================================
-## Define borg repositories once, reference by name in apps
-borgRepos:
-  - name: borgbase-main
-    repo: "ssh://user@borgbase.com/./repo"
-    passphrase: "your-borg-passphrase"
-    privateKey: |
-      -----BEGIN OPENSSH PRIVATE KEY-----
-      your-ssh-private-key-here
-      -----END OPENSSH PRIVATE KEY-----
+# Define borg repositories once, reference by name in apps
+# Multiple apps can share the same repository with app-specific prefixes
+borgRepos: []
+  # - name: borgbase-main
+  #   repo: "ssh://user@borgbase.com/./repo"
+  #   passphrase: "your-borg-passphrase"
+  #   privateKey: |
+  #     -----BEGIN OPENSSH PRIVATE KEY-----
+  #     your-ssh-private-key-here
+  #     -----END OPENSSH PRIVATE KEY-----
 
 ## =============================================================================
 ## Snapshot Defaults (Applied to all apps unless overridden)
 ## =============================================================================
 snapshot:
-  # Container image configuration
   image:
     repository: ghcr.io/frederikb96/kube-borg-backup/controller
     tag: latest
     pullPolicy: Always
 
-  # Image for rsync helper pods (snapshot restore operations)
+  # Image for rsync pods during snapshot restore
   pod:
     image:
       repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
       tag: latest
       pullPolicy: IfNotPresent
 
-  # CronJob schedule configuration
   cron:
-    # When to run snapshots (cron format)
-    schedule: "0 */4 * * *"
-    # Max seconds to wait before giving up on starting a job
+    schedule: "0 */4 * * *"  # Every 4 hours
     startingDeadlineSeconds: 60
-    # Number of successful jobs to keep
     successfulJobsHistoryLimit: 1
-    # Number of failed jobs to keep
     failedJobsHistoryLimit: 1
 
-  # CronJob timeout (activeDeadlineSeconds)
-  # Maximum time in seconds for the snapshot controller to complete all snapshots
-  timeout: 600
+  timeout: 600  # 10 minutes
 
-  # Snapshot retention policy (tiered retention)
-  # Keeps 1 snapshot per time bucket
+  # Tiered retention: keeps 1 snapshot per time bucket
   retention:
     hourly: 24
     daily: 7
@@ -55,41 +50,30 @@ snapshot:
 ## BorgBackup Defaults (Applied to all apps unless overridden)
 ## =============================================================================
 borgbackup:
-  # Container image configuration
   image:
     repository: ghcr.io/frederikb96/kube-borg-backup/controller
     tag: latest
     pullPolicy: Always
 
-  # CronJob schedule configuration
   cron:
-    # When to run backups (cron format)
-    schedule: "30 */6 * * *"
-    # Max seconds to wait before giving up on starting a job
+    schedule: "30 */6 * * *"  # Every 6 hours at :30
     startingDeadlineSeconds: 300
-    # Number of successful jobs to keep
     successfulJobsHistoryLimit: 1
-    # Number of failed jobs to keep
     failedJobsHistoryLimit: 1
 
-  # CronJob timeout (activeDeadlineSeconds)
-  # Maximum time in seconds for the backup controller to complete all backups
-  timeout: 7200
+  timeout: 7200  # 2 hours
 
-  # Borg pod configuration (spawned by backup controller)
   pod:
     image:
       repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
       tag: latest
       pullPolicy: Always
-    # Privileged mode enabled by default for maximum PVC compatibility
-    privileged: true
+    privileged: true  # Required for PVC access
     resources:
       requests:
         memory: "1Gi"
         cpu: "500m"
 
-  # Borg retention policy (applied during borg prune)
   retention:
     hourly: 24
     daily: 7
@@ -101,217 +85,87 @@ borgbackup:
 ## Restore Configuration (v6.0.0+)
 ## =============================================================================
 restore:
-  # Container image for restore pods (rsync, borg restore)
   pod:
     image:
       repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
       tag: latest
       pullPolicy: Always
 
-  # RBAC extensions for restore operations
-  # Standard permissions (Apps API for scale hooks, Batch API for in-cluster mode)
-  # are included by default. Use additionalRules for custom requirements.
+  # RBAC extensions for custom restore hooks
+  # Standard permissions (Apps API, Batch API) included by default
   rbac:
-    # Additional RBAC rules for custom restore hooks
-    # Use cases:
-    # - Cross-namespace access (not recommended, use per-namespace configs instead)
-    # - Custom resources (e.g., Flux HelmRelease suspend/resume)
-    # - External APIs (e.g., ArgoCD Application sync)
-    #
-    # Example: Flux HelmRelease suspend/resume during restore
-    # additionalRules:
-    #   - apiGroups: ["helm.toolkit.fluxcd.io"]
-    #     resources: ["helmreleases"]
-    #     verbs: ["get", "patch"]
-    #
-    # Example: Custom CRD access
-    # additionalRules:
-    #   - apiGroups: ["example.com"]
-    #     resources: ["customresources"]
-    #     verbs: ["get", "list", "patch"]
-    #
-    # Security considerations:
-    # - These rules are namespace-scoped (same namespace as the app)
-    # - Grant minimum required permissions (principle of least privilege)
-    # - Prefer read-only operations where possible
-    # - Review and audit custom rules regularly
     additionalRules: []
+    # Example - Flux HelmRelease access:
+    # - apiGroups: ["helm.toolkit.fluxcd.io"]
+    #   resources: ["helmreleases"]
+    #   verbs: ["get", "patch"]
 
 ## =============================================================================
-## Applications (List of apps to backup)
+## Applications
 ## =============================================================================
-apps:
-  - name: example-app
-    namespace: default
-    createNamespace: false
+# Define your applications here. Each app can have snapshot, borgbackup, and restore config.
+#
+# Example structure:
+# apps:
+#   - name: myapp
+#     namespace: default
+#     createNamespace: false
+#
+#     # Snapshot config
+#     snapshot:
+#       pvcs:
+#         - name: db-data
+#           snapshotClass: longhorn
+#           hooks:  # Optional: pre/post snapshot hooks
+#             pre:
+#               - pod: postgres-0
+#                 command: ["psql", "-c", "SELECT pg_backup_start();"]
+#             post:
+#               - pod: postgres-0
+#                 command: ["psql", "-c", "SELECT pg_backup_stop();"]
+#
+#     # Borg backup config
+#     borgbackup:
+#       borgRepo: borgbase-main  # Reference from borgRepos above
+#       cache:
+#         create: true
+#         pvcName: myapp-borg-cache
+#         storageClassName: local-path
+#         size: 5Gi
+#       pvcs:
+#         - name: db-backup  # Becomes "{app}-db-backup" in borg archive
+#           pvc: db-data     # Source PVC (must have snapshot)
+#           class: longhorn-normal  # Clone PVC storage class
+#           timeout: 3600
+#           cloneBindTimeout: 300
+#
+#     # Restore hooks (v6.0.0+)
+#     restore:
+#       preHooks:  # Run before restore (fail-fast)
+#         - type: scale
+#           deployment: myapp
+#           replicas: 0
+#       postHooks:  # Run after restore (best-effort)
+#         - type: scale
+#           deployment: myapp
+#           replicas: 1
+#
+# Available hook types:
+# - exec: Run command in pod
+#     type: exec
+#     pod: postgres-0
+#     container: postgres  # Optional
+#     command: ["psql", "-c", "..."]
+#
+# - scale: Scale deployment/statefulset
+#     type: scale
+#     deployment: myapp  # OR statefulset: myapp-sts
+#     replicas: 0
+#     parallel: true  # Optional: run concurrently with other parallel hooks
+#
+# - shell: Local shell command (CLI restore only)
+#     type: shell
+#     command: ["flux", "suspend", "hr", "myapp"]
+#     timeout: 300  # Optional
 
-    # Optional: Override snapshot defaults for this app
-    snapshot:
-      pvcs:
-        # Example: PostgreSQL database with consistency hooks
-        - name: postgres-data
-          snapshotClass: longhorn
-          hooks:
-            # Pre-hooks run BEFORE snapshot (sequential, fail-fast)
-            pre:
-              - pod: postgres-0
-                container: postgres  # Optional: specify if pod has multiple containers
-                command: ["psql", "-U", "postgres", "-c", "SELECT pg_backup_start('snapshot', true);"]
-            # Post-hooks run AFTER snapshot (sequential, ALWAYS run even on failure)
-            post:
-              - pod: postgres-0
-                container: postgres
-                command: ["psql", "-U", "postgres", "-c", "SELECT pg_backup_stop(true);"]
-
-        # Example: File-based storage without hooks
-        - name: app-data
-          snapshotClass: longhorn
-
-    # Optional: Override borgbackup defaults for this app
-    borgbackup:
-      # Reference to borg repository (from borgRepos list above)
-      borgRepo: borgbase-main
-
-      # Borg cache PVC (REQUIRED per-app, must be unique)
-      # - If create: true → creates new PVC with name 'pvcName'
-      # - If create: false → uses existing PVC with name 'pvcName' (must exist)
-      cache:
-        create: true              # Create new PVC or use existing
-        pvcName: example-borg-cache  # PVC name (created or referenced)
-        storageClassName: local-path  # Storage class (only used if create: true)
-        size: 5Gi                # Size (only used if create: true)
-
-      # PVCs to backup (must have corresponding snapshots created above)
-      pvcs:
-        - name: postgres-db
-          pvc: postgres-data
-          # Storage class for clone PVC - use WaitForFirstConsumer to avoid binding issues
-          class: longhorn-normal
-          timeout: 3600
-          cloneBindTimeout: 300
-          # Optional: Override borg archive prefix (default: {app-name}-{backup-name})
-          # archivePrefix: custom-db-backup
-
-        - name: app-data-backup
-          pvc: app-data
-          class: longhorn-normal
-          timeout: 1800
-          cloneBindTimeout: 300
-
-    # Optional: Restore hooks for this app (v6.0.0+)
-    # Pre/post hooks executed during restore operations
-    restore:
-      # Pre-restore hooks - executed BEFORE restore operation starts
-      # Behavior:
-      # - Executed sequentially in order defined
-      # - FAIL-FAST: If ANY hook fails, entire restore is aborted
-      # - Use for critical safety operations (scale down deployments, quiesce databases)
-      # - Hooks are executed in parallel if grouped with 'parallel: true'
-      #
-      # Hook types:
-      # 1. scale: Scale Deployment/StatefulSet replicas
-      #    - type: scale
-      #      deployment: myapp           # Deployment name (mutually exclusive with statefulset)
-      #      statefulset: myapp-sts      # StatefulSet name (mutually exclusive with deployment)
-      #      replicas: 0                 # Target replica count
-      #      parallel: true              # Optional: Execute in parallel with other parallel hooks
-      #
-      # 2. exec: Execute command in pod
-      #    - type: exec
-      #      pod: postgres-0             # Pod name
-      #      container: postgres         # Optional: Container name (required if pod has multiple containers)
-      #      command: ["pg_dump", "-Fc", "/backup/dump.sql"]
-      #      parallel: false             # Optional: Execute in parallel with other parallel hooks
-      #
-      # 3. shell: Execute local shell command (restore-only, CLI context)
-      #    - type: shell
-      #      command: ["flux", "suspend", "helmrelease", "myapp", "-n", "default"]
-      #      timeout: 300                # Optional: Timeout in seconds (default: 300)
-      #    NOTE: This hook type is ONLY available in restore operations executed by the CLI.
-      #          It is NOT available in-cluster (controllers cannot execute local commands).
-      #    Common use cases:
-      #    - Flux GitOps: flux suspend/resume helmrelease
-      #    - Notifications: Send alerts before/after restore
-      #    - External integrations: Trigger CI/CD, update DNS
-      #
-      # Common use cases:
-      # - Scale down application deployments to prevent write conflicts
-      # - Stop database write activity (set read-only mode)
-      # - Flush application caches to disk
-      # - Create pre-restore database dump for safety
-      #
-      # Example: Scale down application components before restore
-      # preHooks:
-      #   - type: scale
-      #     deployment: myapp-server
-      #     replicas: 0
-      #   - type: scale
-      #     deployment: myapp-worker
-      #     replicas: 0
-      #
-      # Example: Parallel execution for faster scale-down
-      # preHooks:
-      #   - type: scale
-      #     deployment: myapp-server
-      #     replicas: 0
-      #     parallel: true
-      #   - type: scale
-      #     deployment: myapp-worker
-      #     replicas: 0
-      #     parallel: true
-      #
-      # Example: Flux GitOps suspend before restore (CLI only)
-      # preHooks:
-      #   - type: shell
-      #     command: ["flux", "suspend", "helmrelease", "myapp", "-n", "default"]
-      #   - type: scale
-      #     deployment: myapp
-      #     replicas: 0
-      preHooks: []
-      #  - type: scale
-      #    deployment: myapp
-      #    replicas: 0
-
-      # Post-restore hooks - executed AFTER restore operation completes
-      # Behavior:
-      # - Executed sequentially in order defined
-      # - BEST-EFFORT: Warnings only, restore completes even if hooks fail
-      # - Use for non-critical cleanup operations (scale up deployments, notifications)
-      # - Hooks are executed in parallel if grouped with 'parallel: true'
-      #
-      # Hook types: Same as preHooks (scale, exec, shell)
-      #
-      # Common use cases:
-      # - Scale application deployments back up
-      # - Restart services with restored data
-      # - Run database integrity checks
-      # - Send notifications (success/failure)
-      # - Trigger application initialization routines
-      #
-      # Example: Scale up application components after restore
-      # postHooks:
-      #   - type: scale
-      #     deployment: myapp-server
-      #     replicas: 1
-      #   - type: scale
-      #     deployment: myapp-worker
-      #     replicas: 1
-      #
-      # Example: Database integrity check after restore
-      # postHooks:
-      #   - type: exec
-      #     pod: postgres-0
-      #     container: postgres
-      #     command: ["/bin/bash", "-c", "psql -U postgres -c 'VACUUM ANALYZE;'"]
-      #
-      # Example: Flux GitOps resume after restore (CLI only)
-      # postHooks:
-      #   - type: scale
-      #     deployment: myapp
-      #     replicas: 1
-      #   - type: shell
-      #     command: ["flux", "resume", "helmrelease", "myapp", "-n", "default"]
-      postHooks: []
-      #  - type: scale
-      #    deployment: myapp
-      #    replicas: 2
+apps: []
