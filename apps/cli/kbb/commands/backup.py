@@ -387,32 +387,27 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
         else:
             # Auto-detect from archive name
             # Archive format: {prefix}-YYYY-MM-DD-HH-MM-SS
-            # Prefix matches backups[].name field in config
+            # Check if archive starts with any backup name from config
             backups = config.get('backups', [])
             if not backups:
                 print("Error: No backups configured in config", file=sys.stderr)
                 sys.exit(1)
 
-            # Extract archive prefix (remove timestamp suffix)
-            try:
-                archive_prefix = args.archive_id.rsplit('-', 3)[0]
-            except Exception:
-                print(f"Error: Invalid archive name format: '{args.archive_id}'", file=sys.stderr)
-                print("Expected format: prefix-YYYY-MM-DD-HH-MM-SS", file=sys.stderr)
-                sys.exit(1)
-
-            # Find matching backup config entry
-            matching_backups = [b for b in backups if b.get('name') == archive_prefix]
+            # Find matching backup: archive must start with "{backup_name}-"
+            matching_backups = [
+                b for b in backups
+                if args.archive_id.startswith(b.get('name', '') + '-')
+            ]
 
             if not matching_backups:
                 print(f"Error: Archive '{args.archive_id}' doesn't match any configured backup", file=sys.stderr)
-                print(f"Archive prefix: '{archive_prefix}'", file=sys.stderr)
                 print(f"Available backups: {', '.join(b.get('name', 'N/A') for b in backups)}", file=sys.stderr)
                 print("Specify target PVC manually with --pvc flag", file=sys.stderr)
                 sys.exit(1)
 
+            backup_name = matching_backups[0]['name']
             target_pvc = matching_backups[0]['pvc']
-            print(f"Auto-detected target PVC from archive prefix '{archive_prefix}': {target_pvc}")
+            print(f"Auto-detected target PVC from backup '{backup_name}': {target_pvc}")
 
         # Verify target PVC exists
         try:
