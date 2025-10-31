@@ -42,7 +42,8 @@ import yaml
 from kubernetes import client, config as k8s_config
 from kubernetes.client.rest import ApiException
 from kubernetes.config.config_exception import ConfigException
-from kubernetes.stream import stream
+
+from common.hooks import execute_hooks
 
 GROUP = "snapshot.storage.k8s.io"
 VERSION = "v1"
@@ -51,7 +52,7 @@ PLURAL = "volumesnapshots"
 # Global state for signal handler
 _config: dict[str, Any] | None = None
 _namespace: str | None = None
-_core_api: client.CoreV1Api | None = None
+_api_client: client.ApiClient | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,7 +94,7 @@ def load_config(cli_path: str | None) -> dict[str, Any]:
     return data
 
 
-def init_clients() -> tuple[client.CustomObjectsApi, client.CoreV1Api]:
+def init_clients() -> tuple[client.CustomObjectsApi, client.ApiClient]:
     """Initialize Kubernetes API clients."""
     try:
         k8s_config.load_incluster_config()
@@ -103,98 +104,30 @@ def init_clients() -> tuple[client.CustomObjectsApi, client.CoreV1Api]:
         except Exception as exc:
             print(f"❌ Failed to load kubeconfig: {exc}", file=sys.stderr)
             sys.exit(3)
-    return client.CustomObjectsApi(), client.CoreV1Api()
+    return client.CustomObjectsApi(), client.ApiClient()
 
 
-def run_pod_exec_hook(
-    core_api: client.CoreV1Api,
-    hook: dict[str, Any],
-    namespace: str
-) -> None:
-    """Execute a command in a pod via Kubernetes API.
+def transform_hooks_to_common_format(hooks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Transform controller hook format to common hooks library format.
 
-    Args:
-        core_api: CoreV1Api client
-        hook: Hook config with pod, optional container, and command
-        namespace: Kubernetes namespace
+    Controller format:
+        {'pod': 'postgres-0', 'container': 'postgres', 'command': [...]}
 
-    Raises:
-        ApiException: If pod exec fails
-    """
-    pod_name = hook.get("pod")
-    container = hook.get("container")  # Optional
-    command = hook.get("command", [])
-
-    if not pod_name or not command:
-        print(f"⚠️  Hook missing pod or command: {hook}", file=sys.stderr)
-        return
-
-    print(f"🔧 Executing in pod {pod_name}: {' '.join(command)}")
-
-    try:
-        resp = stream(
-            core_api.connect_get_namespaced_pod_exec,
-            pod_name,
-            namespace,
-            command=command,
-            container=container,
-            stderr=True,
-            stdin=False,
-            stdout=True,
-            tty=False,
-            _preload_content=False
-        )
-
-        # Read output
-        resp.run_forever(timeout=60)
-        if resp.returncode != 0:
-            print(f"❌ Hook failed with exit code {resp.returncode}", file=sys.stderr)
-            raise RuntimeError(f"Hook command failed: {resp.returncode}")
-
-        print("✅ Hook completed successfully")
-
-    except ApiException as exc:
-        print(f"❌ Failed to exec in pod {pod_name}: {exc}", file=sys.stderr)
-        raise
-
-
-def run_hooks(
-    core_api: client.CoreV1Api,
-    hooks: list[dict[str, Any]],
-    namespace: str,
-    hook_type: str
-) -> None:
-    """Run a list of hooks sequentially.
+    Common library format:
+        {'type': 'exec', 'pod': 'postgres-0', 'container': 'postgres', 'command': [...]}
 
     Args:
-        core_api: CoreV1Api client
-        hooks: List of hook configurations
-        namespace: Kubernetes namespace
-        hook_type: "pre" or "post" for logging
+        hooks: List of hooks in controller format
 
-    Raises:
-        RuntimeError: If any hook fails (only for pre-hooks)
+    Returns:
+        List of hooks in common library format (with 'type': 'exec' added)
     """
-    if not hooks:
-        return
-
-    print(f"\n{'='*60}")
-    print(f"🔄 Running {hook_type}-hooks ({len(hooks)} total)")
-    print(f"{'='*60}\n")
-
-    for i, hook in enumerate(hooks, 1):
-        print(f"[{i}/{len(hooks)}] {hook_type.capitalize()}-hook:")
-        try:
-            run_pod_exec_hook(core_api, hook, namespace)
-        except Exception as exc:
-            if hook_type == "pre":
-                # Pre-hooks must succeed
-                print(f"\n❌ Pre-hook {i} failed, aborting!", file=sys.stderr)
-                raise
-            else:
-                # Post-hooks: log error but continue
-                print(f"\n⚠️  Post-hook {i} failed: {exc}", file=sys.stderr)
-                print("Continuing with remaining post-hooks...")
+    transformed = []
+    for hook in hooks:
+        # Add 'type': 'exec' to each hook for common library
+        transformed_hook = {'type': 'exec', **hook}
+        transformed.append(transformed_hook)
+    return transformed
 
 
 def create_snapshot(
@@ -407,7 +340,7 @@ def prune_snapshots_tiered(
 
 def cleanup_post_hooks():
     """Signal handler: Always run post-hooks on termination."""
-    if _config and _core_api and _namespace:
+    if _config and _api_client and _namespace:
         print("\n\n🛑 Received SIGTERM - running post-hooks before exit...")
         pvcs = _config.get("snapshots", {}).get("pvcs", [])
         all_post_hooks = []
@@ -417,7 +350,15 @@ def cleanup_post_hooks():
 
         if all_post_hooks:
             try:
-                run_hooks(_core_api, all_post_hooks, _namespace, "post")
+                # Transform hooks to common library format
+                transformed_hooks = transform_hooks_to_common_format(all_post_hooks)
+
+                print(f"\n{'='*60}")
+                print(f"🔄 Running post-hooks ({len(transformed_hooks)} total)")
+                print(f"{'='*60}\n")
+
+                # Execute with common hooks library
+                execute_hooks(_api_client, _namespace, transformed_hooks, mode="post")
             except Exception as exc:
                 print(f"❌ Post-hooks failed during cleanup: {exc}", file=sys.stderr)
     sys.exit(0)
@@ -430,7 +371,7 @@ def log_msg(msg: str) -> None:
 
 def main() -> None:
     """Main execution flow."""
-    global _config, _namespace, _core_api
+    global _config, _namespace, _api_client
 
     # Register signal handler for graceful shutdown
     signal.signal(signal.SIGTERM, lambda s, f: cleanup_post_hooks())
@@ -447,8 +388,8 @@ def main() -> None:
 
     test_mode = args.test
 
-    custom_api, core_api = init_clients()
-    _core_api = core_api
+    custom_api, api_client = init_clients()
+    _api_client = api_client
 
     log_msg(f"🔧 Using namespace: {namespace}")
 
@@ -482,7 +423,15 @@ def main() -> None:
     try:
         # Step 1: Run all pre-hooks sequentially (fail-fast)
         if all_pre_hooks:
-            run_hooks(core_api, all_pre_hooks, namespace, "pre")
+            # Transform hooks to common library format
+            transformed_pre_hooks = transform_hooks_to_common_format(all_pre_hooks)
+
+            print(f"\n{'='*60}")
+            print(f"🔄 Running pre-hooks ({len(transformed_pre_hooks)} total)")
+            print(f"{'='*60}\n")
+
+            # Execute with common hooks library
+            execute_hooks(api_client, namespace, transformed_pre_hooks, mode="pre")
 
         # Step 2: Create snapshots in parallel
         print(f"\n{'='*60}")
@@ -523,10 +472,15 @@ def main() -> None:
         # Step 4: ALWAYS run post-hooks (even on failure)
         if all_post_hooks:
             try:
+                # Transform hooks to common library format
+                transformed_post_hooks = transform_hooks_to_common_format(all_post_hooks)
+
                 print(f"\n{'='*60}")
-                print(f"🔄 Running post-hooks ({len(all_post_hooks)} total)")
+                print(f"🔄 Running post-hooks ({len(transformed_post_hooks)} total)")
                 print(f"{'='*60}\n")
-                run_hooks(core_api, all_post_hooks, namespace, "post")
+
+                # Execute with common hooks library
+                execute_hooks(api_client, namespace, transformed_post_hooks, mode="post")
             except Exception as exc:
                 print(f"❌ Post-hooks failed: {exc}", file=sys.stderr)
                 snapshot_failed = True
