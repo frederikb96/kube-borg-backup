@@ -8,10 +8,14 @@ This script orchestrates BorgBackup restore operations:
 4. Mounts borg archive via FUSE in background thread
 5. Runs rsync to copy data from mount to target PVC
 6. Unmounts and cleans up on completion or signal
+
+Signal handling:
+- SIGTERM/SIGINT: Terminates subprocesses (borg mount, rsync) and cleans up locks
 """
 
 import argparse
 import logging
+import os
 import signal
 import subprocess
 import sys
@@ -19,7 +23,7 @@ import threading
 import time
 from pathlib import Path
 
-from common import load_config, setup_ssh_key, get_borg_env, init_borg_repo
+from common import load_config, setup_ssh_key, get_borg_env
 
 # Configure logging
 logging.basicConfig(
@@ -32,6 +36,8 @@ logger = logging.getLogger(__name__)
 # Global state for cleanup
 _mount_point: Path | None = None
 _borg_process: subprocess.Popen | None = None
+_rsync_process: subprocess.Popen | None = None
+_borg_repo: str | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -153,6 +159,8 @@ def run_rsync(source: Path, target: Path) -> int:
     Raises:
         subprocess.CalledProcessError: If rsync fails
     """
+    global _rsync_process
+
     # Detect if archive has single top-level 'data' directory (legacy format)
     # This happens when backup was created with `borg create repo::archive /data`
     # instead of `cd /data && borg create repo::archive .`
@@ -181,18 +189,27 @@ def run_rsync(source: Path, target: Path) -> int:
     ]
 
     try:
-        result = subprocess.run(
+        _rsync_process = subprocess.Popen(
             cmd,
             stdout=sys.stdout,
-            stderr=sys.stderr,
-            check=True
+            stderr=sys.stderr
         )
 
-        logger.info("Rsync completed successfully")
-        return result.returncode
+        logger.info(f"Rsync PID: {_rsync_process.pid}")
 
-    except subprocess.CalledProcessError as exc:
-        logger.error(f"Rsync failed with exit code {exc.returncode}")
+        # Wait for rsync to complete
+        exit_code = _rsync_process.wait()
+        _rsync_process = None
+
+        if exit_code != 0:
+            logger.error(f"Rsync failed with exit code {exit_code}")
+            return exit_code
+
+        logger.info("Rsync completed successfully")
+        return 0
+
+    except Exception as exc:
+        logger.error(f"Rsync failed: {exc}")
         raise
 
 
@@ -200,14 +217,28 @@ def cleanup(signum=None, frame=None) -> None:
     """Unmount archive and cleanup resources.
 
     Called on normal exit or when receiving SIGTERM/SIGINT.
+    Ensures all subprocesses are terminated and locks cleaned up.
 
     Args:
         signum: Signal number (if called from signal handler)
         frame: Current stack frame (if called from signal handler)
     """
-    global _mount_point, _borg_process
+    global _mount_point, _borg_process, _rsync_process, _borg_repo
 
     logger.info("Cleaning up...")
+
+    # Terminate rsync if running
+    if _rsync_process and _rsync_process.poll() is None:
+        logger.info(f"Terminating rsync PID {_rsync_process.pid}...")
+        try:
+            _rsync_process.send_signal(signal.SIGINT)
+            _rsync_process.wait(timeout=5)
+            logger.info("Rsync terminated gracefully")
+        except subprocess.TimeoutExpired:
+            logger.warning("Rsync did not stop, killing...")
+            _rsync_process.kill()
+        except Exception as exc:
+            logger.warning(f"Failed to terminate rsync: {exc}")
 
     # Unmount if mount point exists and is mounted
     if _mount_point and _mount_point.exists():
@@ -234,13 +265,33 @@ def cleanup(signum=None, frame=None) -> None:
 
     # Wait for borg process to exit (if still running)
     if _borg_process and _borg_process.poll() is None:
-        logger.info("Waiting for FUSE mount process to exit...")
+        logger.info(f"Terminating borg mount PID {_borg_process.pid}...")
 
         try:
-            _borg_process.wait(timeout=5)
+            _borg_process.send_signal(signal.SIGINT)
+            _borg_process.wait(timeout=20)
+            logger.info("Borg mount stopped gracefully")
         except subprocess.TimeoutExpired:
-            logger.warning("FUSE mount process did not exit, killing...")
-            _borg_process.kill()
+            logger.warning("Borg mount did not stop after 20s, killing...")
+            try:
+                _borg_process.kill()
+                _borg_process.wait(timeout=1)
+                logger.info("Borg mount killed with SIGKILL")
+            except Exception as exc:
+                logger.warning(f"Failed to kill borg mount: {exc}")
+
+            # Cleanup lock manually if kill was needed
+            if _borg_repo:
+                logger.info("Breaking stale lock...")
+                try:
+                    subprocess.run(
+                        ['borg', 'break-lock', _borg_repo],
+                        timeout=10,
+                        capture_output=True
+                    )
+                    logger.info("Lock cleanup complete")
+                except Exception as exc:
+                    logger.warning(f"Failed to break lock: {exc}")
 
     # Exit with appropriate code
     if signum:
@@ -257,7 +308,7 @@ def run_restore(config: dict) -> int:
     Returns:
         Exit code (0 = success)
     """
-    global _mount_point
+    global _mount_point, _borg_repo
 
     # Validate restore-specific fields
     validate_restore_config(config)
@@ -267,14 +318,17 @@ def run_restore(config: dict) -> int:
     archive_name = config['archiveName']
     target_path = Path(config.get('targetPath', '/target'))
 
+    _borg_repo = borg_repo
+
     # Setup SSH and environment
     ssh_key_file = setup_ssh_key(config['sshPrivateKey'])
     env = get_borg_env(config, ssh_key_file)
 
-    # Check repository status
-    init_borg_repo(config, env)
+    # Note: No init check needed - restore requires existing archive
+    # If archive doesn't exist, borg mount will fail with clear error
 
     logger.info("Starting restore operation")
+    logger.info(f"PID: {os.getpid()}")
     logger.info(f"Archive: {archive_name}")
     logger.info(f"Target: {target_path}")
 
