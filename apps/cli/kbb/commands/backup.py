@@ -182,8 +182,24 @@ def list_borg_archives(args: argparse.Namespace) -> None:
         cleanup_list_resources(v1, args.namespace, pod_name, secret_name)
 
         # Display results
-        archives = archive_data.get('archives', [])
+        all_archives = archive_data.get('archives', [])
         repository = archive_data.get('repository', 'Unknown')
+
+        # Extract archive prefixes from config (backups[].name contains the prefix)
+        # Archive naming: {prefix}-{timestamp}
+        # Prefix can be custom (archivePrefix) or default ({app-name}-{backup-name})
+        backups = config.get('backups', [])
+        archive_prefixes = [backup.get('name') for backup in backups if backup.get('name')]
+
+        if not archive_prefixes:
+            print("Error: No backup configurations found in config", file=sys.stderr)
+            sys.exit(1)
+
+        # Filter archives that match any of the configured prefixes
+        archives = [
+            a for a in all_archives
+            if any(a.get('name', '').startswith(f"{prefix}-") for prefix in archive_prefixes)
+        ]
 
         print(f"\nBorg archives for {args.app} ({len(archives)} found):")
         print(f"Repository: {repository}\n")
