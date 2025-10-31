@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.3] - 2025-10-31
+
+### Fixed
+
+- **Mypy CI Pipeline:** Fixed mypy type checking failure in GitHub Actions
+  - Deleted unused `apps/backup-runner/__init__.py` (hyphen in directory name invalid for Python package)
+  - Updated `mypy.ini` to check individual .py files instead of package directory
+  - No functional changes - backup-runner scripts run standalone in Docker, never imported as module
+  - CI now passes: 8 source files checked successfully
+  - File changes: `apps/backup-runner/__init__.py` (deleted), `mypy.ini` (updated files directive)
+
 ## [6.0.2] - 2025-10-30
 
 ### Fixed
