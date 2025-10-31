@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.6] - 2025-11-01
+
+### Fixed
+
+- **CLI Backup Restore PVC Matching Logic:** Critical fix for archive prefix matching
+  - **Bug:** `rsplit('-', 3)[0]` only removed last 3 parts, but timestamp has 6 parts when split by `-`
+  - Example: `kimai-data-2025-10-31-18-33-28` → `kimai-data-2025-10-31` (wrong!) instead of `kimai-data`
+  - **Fix:** Use `startswith()` check instead of extracting prefix
+  - Algorithm: `archive.startswith(backup_name + '-')` for each configured backup
+  - Much simpler, more robust, works regardless of timestamp format
+  - File: `apps/cli/kbb/commands/backup.py` (lines 387-410)
+  - Commit: f7e8a06
+
+- **CLI Linting:** Removed unused signal handler variables
+  - Fixed ruff F841 errors: `old_sigterm`, `old_sigint`, `old_sighup` assigned but never used
+  - Not needed since CLI process exits after restore completes
+  - File: `apps/cli/kbb/restore_helpers.py` (lines 206-208)
+  - Commit: 783a78c
+
+### Changed
+
+- **CI/CD: Release Pipeline Quality Gates:** Enforced linting and type checking before releases
+  - Consolidated 3 separate workflows into single `release-pipeline.yaml`
+  - Added job dependencies using GitHub Actions `needs` keyword
+  - Step 1 (parallel): `lint` (ruff), `typecheck` (mypy), `helm-lint` (helm lint)
+  - Step 2 (only if ALL pass): `release-helm`, `build-controller`, `build-backup-runner`
+  - **Zero chance** of releasing with linting, type, or Helm chart errors
+  - Atomic release process (all or nothing)
+  - Removed: `release.yaml`, `controller-image.yaml`, `backup-runner-image.yaml`
+  - Created: `.github/workflows/release-pipeline.yaml`
+  - Commits: abf2756, 4aafb95
+
 ## [6.0.5] - 2025-10-31
 
 ### Fixed
