@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.7] - 2025-11-01
+
+### Fixed
+
+- **Pod Monitoring Event Deduplication:** Eliminated repeating event output
+  - **Bug:** Watch timeout reconnects (every 60s) replayed ALL historical pod events
+  - **Symptom:** Same events (Scheduled, FailedAttachVolume, Pulling, etc.) repeated 4+ times throughout pod lifecycle
+  - **Root cause:** No deduplication mechanism in `apps/common/pod_monitor.py` `_stream_events()` method
+  - **Fix:** UID-based deduplication using event UIDs tracked in memory
+  - **Why UID approach:** Simpler and more robust than resourceVersion tracking, handles duplicates from ALL sources (timeout, 410 errors, network drops), no race conditions
+  - **Benefits:** Clean event output, enhanced error handling (network interruptions), quieter logging (410 errors are normal)
+  - Memory efficient: ~50-100 UIDs per pod (~4KB)
+  - File: `apps/common/pod_monitor.py` (lines 157-222)
+
+- **Container Naming Consistency:** Renamed backup job container from "borg" to "backup-runner"
+  - Pod name: `{release}-borg-{name}-{timestamp}` → `{release}-backup-runner-{name}-{timestamp}`
+  - Container name: `"borg"` → `"backup-runner"`
+  - Better reflects the actual image name and purpose
+  - File: `apps/controller/kube_snapshot_borgbackup/main.py` (lines 597, 989)
+
 ## [6.0.6] - 2025-11-01
 
 ### Fixed

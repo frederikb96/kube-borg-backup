@@ -594,7 +594,7 @@ def build_borg_pod_manifest(
             "restartPolicy": "Never",
             "containers": [
                 {
-                    "name": "borg",
+                    "name": "backup-runner",
                     "image": (
                         f"{pod_config.get('image', {}).get('repository', 'ghcr.io/frederikb96/kube-borg-backup/backup-runner')}"  # noqa: E501
                         f":{pod_config.get('image', {}).get('tag', 'latest')}"
@@ -986,7 +986,7 @@ def process_backup_with_clone(
 
         # Step 1a: Create ephemeral secret with config file
         ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
-        pod_name = f"{release_name}-borg-{name}-{ts}"
+        pod_name = f"{release_name}-backup-runner-{name}-{ts}"
         config_secret_name = f"{pod_name}-config"
         log_msg(f"🔐 Creating ephemeral config secret: {config_secret_name}")
         create_borg_secret(

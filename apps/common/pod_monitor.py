@@ -157,62 +157,66 @@ class PodMonitor:
     def _stream_events(self) -> None:
         """Stream pod events to stdout in real-time (runs in background thread).
 
-        This function continuously watches for events until stop_event is set.
-        It automatically reconnects when watch timeouts occur to ensure
-        continuous event monitoring throughout pod lifecycle.
+        Uses application-level deduplication via event UIDs to prevent duplicate
+        event output. This is simpler and more robust than resourceVersion tracking:
+        - Handles duplicates from timeout reconnects, 410 errors, network issues
+        - No race conditions or complex resourceVersion semantics
+        - Works regardless of watch timing
 
-        Copied from controller stream_pod_events() function.
+        The watch will reconnect on timeouts and errors, potentially replaying events.
+        We filter duplicates by tracking seen event UIDs in memory.
         """
         try:
-            latest_resource_version = None
+            # Track seen event UIDs to prevent duplicates (memory usage: ~50-100 UIDs max)
+            seen_event_uids: set[str] = set()
 
             while not self.stop_event.is_set():
                 w = watch.Watch()
 
                 try:
-                    # Build kwargs with optional resourceVersion
-                    kwargs = {
-                        'namespace': self.namespace,
-                        'field_selector': f"involvedObject.kind=Pod,involvedObject.name={self.pod_name}",
-                        'timeout_seconds': 60
-                    }
-
-                    # Resume from last seen event (no duplicates!)
-                    if latest_resource_version:
-                        kwargs['resource_version'] = latest_resource_version
-
-                    for event in w.stream(self.v1.list_namespaced_event, **kwargs):
+                    for event in w.stream(
+                        self.v1.list_namespaced_event,
+                        namespace=self.namespace,
+                        field_selector=f"involvedObject.kind=Pod,involvedObject.name={self.pod_name}",
+                        timeout_seconds=60
+                    ):
                         if self.stop_event.is_set():
                             break
 
                         obj = event['object']
-                        print(f"[EVENT] {obj.reason}: {obj.message}", flush=True)
 
-                        # Track list resource_version from watch response for next reconnect
-                        # Using event['object'].metadata.resource_version would cause infinite
-                        # event replay on 60s timeout reconnects (Bug #1 - v5.0.7-v5.0.8)
-                        if 'raw_object' in event and 'metadata' in event['raw_object']:
-                            latest_resource_version = event['raw_object']['metadata'].get('resourceVersion')
+                        # Deduplicate via event UID (handles all duplicate sources)
+                        event_uid = obj.metadata.uid
+                        if event_uid in seen_event_uids:
+                            continue
+
+                        # New event - print and track
+                        print(f"[EVENT] {obj.reason}: {obj.message}", flush=True)
+                        seen_event_uids.add(event_uid)
 
                 except ApiException as exc:
-                    # Ignore status 410 (resource version too old) - normal on reconnect
-                    if hasattr(exc, 'status') and exc.status == 410:
-                        # Reset resourceVersion, will get fresh events
-                        latest_resource_version = None
-                        time.sleep(1)
-                        continue
-
+                    # Watch errors are expected (timeout, resourceVersion expired, network)
+                    # Just log and reconnect - deduplication handles replayed events
                     if not self.stop_event.is_set():
-                        reason = exc.reason if hasattr(exc, 'reason') else exc
-                        log_msg(f"⚠️  Event watch interrupted for {self.pod_name}: {reason}")
-                    break
+                        # Only log non-timeout errors
+                        if not (hasattr(exc, 'status') and exc.status == 410):
+                            reason = exc.reason if hasattr(exc, 'reason') else exc
+                            log_msg(f"⚠️  Event watch interrupted for {self.pod_name}: {reason}")
+                    # Continue to reconnect (outer while loop)
+
+                except Exception as exc:
+                    # Network errors, connection drops, etc.
+                    if not self.stop_event.is_set():
+                        log_msg(f"⚠️  Event watch error for {self.pod_name}: {exc}")
+                    # Continue to reconnect (outer while loop)
 
                 finally:
                     w.stop()
 
-                # Brief pause before reconnect
+                # Brief pause before reconnect (prevents hammering on persistent failures)
                 if not self.stop_event.is_set():
-                    time.sleep(1)
+                    time.sleep(2)
 
         except Exception as exc:
-            log_msg(f"⚠️  Error streaming events for {self.pod_name}: {exc}")
+            # Thread-level error (should never happen)
+            log_msg(f"⚠️  Fatal error in event stream for {self.pod_name}: {exc}")
