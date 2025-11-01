@@ -127,6 +127,8 @@ jobs:
           file: apps/Dockerfile.controller
           platforms: linux/amd64,linux/arm64
           push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
             ghcr.io/${{ github.repository_owner }}/kube-borg-backup/controller:${{ steps.ver.outputs.version }}
             ${{ steps.ver.outputs.is_prerelease == 'false' && format('ghcr.io/{0}/kube-borg-backup/controller:latest', github.repository_owner) || '' }}
@@ -172,6 +174,8 @@ jobs:
           file: apps/Dockerfile.backup-runner
           platforms: linux/amd64,linux/arm64
           push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
             ghcr.io/${{ github.repository_owner }}/kube-borg-backup/backup-runner:${{ steps.ver.outputs.version }}
             ${{ steps.ver.outputs.is_prerelease == 'false' && format('ghcr.io/{0}/kube-borg-backup/backup-runner:latest', github.repository_owner) || '' }}
