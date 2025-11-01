@@ -202,6 +202,42 @@ def handle_shutdown(signum, frame):
     sys.exit(143)
 
 
+def check_repo_lock(borg_repo: str, env: dict) -> None:
+    """Check if borg repository is locked before starting backup.
+
+    Runs `borg with-lock --lock-wait 0 <repo> true` to check lock status.
+    Logs result but does not affect backup execution flow.
+
+    Args:
+        borg_repo: Borg repository URL
+        env: Environment variables for borg command
+    """
+    logger.info("Checking repository lock status...")
+
+    try:
+        result = subprocess.run(
+            ['borg', 'with-lock', '--lock-wait', '0', borg_repo, 'true'],
+            env=env,
+            capture_output=True,
+            timeout=10,
+            text=True
+        )
+
+        if result.returncode == 0:
+            logger.info("✓ Repository is UNLOCKED and ready for backup")
+        else:
+            # Non-zero exit means lock could not be acquired
+            logger.warning(f"⚠️  Repository appears to be LOCKED (exit code {result.returncode})")
+            if result.stderr:
+                # Log stderr for debugging (may contain lock details)
+                logger.warning(f"Lock check stderr: {result.stderr.strip()}")
+
+    except subprocess.TimeoutExpired:
+        logger.warning("⚠️  Lock check timed out after 10s (repo may be slow or locked)")
+    except Exception as exc:
+        logger.warning(f"⚠️  Lock check failed: {exc}")
+
+
 def monitor_borg_heartbeat(pid: int, stop_event: threading.Event) -> None:
     """Monitor borg process and print heartbeat every 60s.
 
@@ -218,6 +254,7 @@ def monitor_borg_heartbeat(pid: int, stop_event: threading.Event) -> None:
         # Establish baseline metrics
         baseline_cpu = process.cpu_times()
         baseline_io = process.io_counters()
+        baseline_net = psutil.net_io_counters()  # Can be None on some systems
         baseline_threads = process.num_threads()
         baseline_memory = process.memory_info().rss / (1024 * 1024)  # MB
 
@@ -230,6 +267,7 @@ def monitor_borg_heartbeat(pid: int, stop_event: threading.Event) -> None:
         # Store previous values for delta calculation
         prev_cpu = baseline_cpu
         prev_io = baseline_io
+        prev_net = baseline_net
 
         while not stop_event.wait(timeout=60):
             try:
@@ -240,12 +278,25 @@ def monitor_borg_heartbeat(pid: int, stop_event: threading.Event) -> None:
                 # Get current metrics
                 current_cpu = process.cpu_times()
                 current_io = process.io_counters()
+                current_net = psutil.net_io_counters()  # Can be None
                 current_memory = process.memory_info().rss / (1024 * 1024)  # MB
 
                 # Calculate deltas since last heartbeat
                 cpu_delta = (current_cpu.user - prev_cpu.user) + (current_cpu.system - prev_cpu.system)
                 io_delta = (current_io.read_bytes - prev_io.read_bytes) + (current_io.write_bytes - prev_io.write_bytes)
                 io_delta_mb = io_delta / (1024 * 1024)  # MB
+
+                # Calculate network delta if available
+                if baseline_net is not None and current_net is not None:
+                    net_delta = (
+                        (current_net.bytes_sent - prev_net.bytes_sent) +
+                        (current_net.bytes_recv - prev_net.bytes_recv)
+                    )
+                    net_delta_mb = net_delta / (1024 * 1024)  # MB
+                    net_stat = f"Net: +{net_delta_mb:.1f}MB | "
+                    prev_net = current_net
+                else:
+                    net_stat = ""  # Skip network stats if not available
 
                 # Update previous values
                 prev_cpu = current_cpu
@@ -254,7 +305,7 @@ def monitor_borg_heartbeat(pid: int, stop_event: threading.Event) -> None:
                 timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
                 logger.info(
                     f"[{timestamp}] [HEARTBEAT] ✓ ACTIVE | CPU: +{cpu_delta:.1f}s | "
-                    f"I/O: +{io_delta_mb:.1f}MB | Memory: {current_memory:.1f}MB"
+                    f"I/O: +{io_delta_mb:.1f}MB | {net_stat}Memory: {current_memory:.1f}MB"
                 )
 
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -289,6 +340,7 @@ def run_backup(config: dict) -> int:
     lock_wait = config['lockWait']
     retention = config.get('retention', {})
     cache_the_cache = config.get('cacheTheCache', False)
+    borg_flags = config.get('borgFlags', ['--stats'])
 
     _borg_repo = borg_repo
     _cache_the_cache_enabled = cache_the_cache
@@ -306,6 +358,9 @@ def run_backup(config: dict) -> int:
     ssh_key_file = setup_ssh_key(config['sshPrivateKey'])
     env = get_borg_env(config, ssh_key_file, cache_dir=cache_dir)
 
+    # Check if repository is locked before starting backup
+    check_repo_lock(borg_repo, env)
+
     logger.info(f"Starting backup: {prefix}")
     logger.info(f"Lock wait timeout: {lock_wait}s")
     logger.info(f"PID: {os.getpid()}")
@@ -321,9 +376,7 @@ def run_backup(config: dict) -> int:
     borg_create_cmd = [
         'borg', 'create',
         '--lock-wait', str(lock_wait),
-        '--list',
-        '--filter=AME',
-        '--stats',
+    ] + borg_flags + [
         '--files-cache', 'mtime,size',
         archive,
         backup_dir

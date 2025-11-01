@@ -144,6 +144,7 @@ restore:
 #           class: longhorn-normal  # Clone PVC storage class
 #           timeout: 3600
 #           cloneBindTimeout: 300
+#           # borgFlags: ["--stats"]  # Optional: borg create flags (default: ["--stats"])
 #
 #     # Restore hooks (v6.0.0+)
 #     restore:

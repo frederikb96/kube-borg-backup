@@ -63,6 +63,7 @@ apps:
           class: longhorn-normal
           timeout: 3600
           cloneBindTimeout: 300
+          # borgFlags: ["--stats"]  # Optional: custom borg create flags
 
     # Restore hooks
     restore:

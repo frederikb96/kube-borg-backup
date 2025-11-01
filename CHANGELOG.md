@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.9] - 2025-11-01
+
+### Added
+
+- **Configurable borg Flags per PVC:** New optional `borgFlags` field in `borgbackup.pvcs[]`
+  - Default: `["--stats"]` (removes problematic `--list --filter=AME`)
+  - Massive performance improvement: 30 min → 2-3 min backups for unchanged data
+  - Fixes per-file processing overhead (1,669 files × ~1s = 28 min eliminated)
+  - Configurable per PVC: `borgFlags: []` for max speed, `borgFlags: ["--stats", "--progress"]` for visibility
+  - Files: values.yaml, example/values.yaml, borgbackup-config-secret.yaml, controller/main.py, backup-runner/backup.py
+
+- **Network Stats in Heartbeat:** Heartbeat now shows network I/O delta
+  - Displays `Net: +X.XMB` every 60 seconds
+  - Helps identify network-bound operations
+  - Gracefully handles systems without network stats support
+  - File: backup-runner/backup.py
+
+- **Borg Lock Check:** Pre-flight repository lock status check before backup
+  - Runs `borg with-lock --lock-wait 0` to check lock status
+  - Logs: unlocked/locked/timeout/error
+  - Non-blocking diagnostic (always continues)
+  - 10s timeout prevents hanging
+  - File: backup-runner/backup.py
+
+### Changed
+
+- **Default borg Flags Performance Fix:** Removed `--list --filter=AME` from defaults
+  - Previous: caused ~1s overhead per file (network metadata checks)
+  - New default: `["--stats"]` only
+  - Performance: 30 min → 2-3 min for incremental backups
+
 ## [6.0.8] - 2025-11-01
 
 ### Added
