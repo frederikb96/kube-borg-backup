@@ -14,7 +14,11 @@ metadata:
     app.kubernetes.io/component: {{ .name }}
 spec:
   accessModes:
-    - ReadWriteOnce
+{{- if $borgConfig.cache.accessModes }}
+{{ toYaml $borgConfig.cache.accessModes | indent 4 }}
+{{- else }}
+    - ReadWriteOncePod
+{{- end }}
   storageClassName: {{ $borgConfig.cache.storageClassName }}
   resources:
     requests:

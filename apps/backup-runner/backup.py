@@ -37,6 +37,78 @@ logger = logging.getLogger(__name__)
 # Global state for signal handling
 _borg_process: subprocess.Popen | None = None
 _borg_repo: str | None = None
+_shutdown_mode_active: bool = False
+_cache_local_dir: str | None = None
+_cache_the_cache_enabled: bool = False
+
+
+def rsync_cache_startup(cache_local: str) -> None:
+    """Rsync cache from PVC to local ephemeral storage.
+
+    Args:
+        cache_local: Path to local ephemeral cache directory
+
+    Raises:
+        SystemExit: If rsync fails
+    """
+    logger.info(f"Copying cache from /cache/ to {cache_local}/ for faster access...")
+
+    # Create local cache directory
+    try:
+        os.makedirs(cache_local, exist_ok=True)
+    except Exception as exc:
+        logger.error(f"Failed to create local cache directory {cache_local}: {exc}")
+        sys.exit(1)
+
+    # Rsync cache from PVC to local (with stats, no per-file output)
+    rsync_cmd = ['rsync', '-a', '--delete', '--stats', '/cache/', f'{cache_local}/']
+
+    try:
+        result = subprocess.run(rsync_cmd)
+
+        if result.returncode != 0:
+            logger.error(f"Rsync startup failed (exit {result.returncode})")
+            sys.exit(1)
+
+        logger.info("Cache copied to local ephemeral storage successfully")
+
+    except Exception as exc:
+        logger.error(f"Rsync startup failed: {exc}")
+        sys.exit(1)
+
+
+def rsync_cache_back(cache_local: str, verbose: bool = False) -> None:
+    """Rsync cache from local back to PVC.
+
+    Args:
+        cache_local: Path to local ephemeral cache directory
+        verbose: Show file-by-file progress (for SIGTERM shutdown)
+
+    Raises:
+        SystemExit: If rsync fails (exit code 1)
+    """
+    mode_str = "verbose" if verbose else "summary"
+    logger.info(f"Syncing cache from {cache_local}/ back to /cache/ ({mode_str} mode)...")
+
+    # Build rsync command
+    rsync_cmd = ['rsync', '-a', '--delete', '--stats']
+    if verbose:
+        rsync_cmd.extend(['-v', '--progress'])
+
+    rsync_cmd.extend([f'{cache_local}/', '/cache/'])
+
+    try:
+        result = subprocess.run(rsync_cmd)
+
+        if result.returncode != 0:
+            logger.error(f"Rsync write-back failed (exit {result.returncode})")
+            sys.exit(1)
+
+        logger.info("Cache synced back to PVC successfully")
+
+    except Exception as exc:
+        logger.error(f"Rsync write-back failed: {exc}")
+        sys.exit(1)
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,15 +143,17 @@ def handle_shutdown(signum, frame):
 
     When SIGTERM/SIGINT is received:
     1. Send SIGINT to borg process (triggers checkpoint)
-    2. Wait up to 20 seconds for borg to finish
+    2. Wait up to 10 seconds for borg to finish
     3. If still running, send SIGKILL and break lock
+    4. Rsync cache back to PVC (if cache-the-cache enabled)
 
     Args:
         signum: Signal number
         frame: Current stack frame
     """
-    global _borg_process, _borg_repo
+    global _borg_process, _borg_repo, _shutdown_mode_active, _cache_local_dir, _cache_the_cache_enabled
 
+    _shutdown_mode_active = True
     logger.info("Received termination signal, stopping borg gracefully...")
 
     if _borg_process and _borg_process.poll() is None:
@@ -90,17 +164,17 @@ def handle_shutdown(signum, frame):
         except Exception as exc:
             logger.warning(f"Failed to send SIGINT: {exc}")
 
-        # Wait up to 20 seconds for checkpoint
-        logger.info("Waiting up to 20 seconds for checkpoint to complete...")
-        for i in range(1, 21):
+        # Wait up to 10 seconds for checkpoint
+        logger.info("Waiting up to 10 seconds for checkpoint to complete...")
+        for i in range(1, 11):
             if _borg_process.poll() is not None:
                 logger.info(f"Borg stopped gracefully after {i}s")
-                sys.exit(143)
+                break
             time.sleep(1)
 
-        # Still running after 20s - force kill and cleanup
+        # Still running after 10s - force kill and cleanup
         if _borg_process.poll() is None:
-            logger.info("Checkpoint not complete after 20s, forcing termination...")
+            logger.info("Checkpoint not complete after 10s, forcing termination...")
             try:
                 _borg_process.kill()
                 _borg_process.wait(timeout=1)
@@ -120,6 +194,10 @@ def handle_shutdown(signum, frame):
                     logger.info("Lock cleanup complete")
                 except Exception as exc:
                     logger.warning(f"Failed to break lock: {exc}")
+
+    # Rsync cache back if cache-the-cache enabled
+    if _cache_the_cache_enabled and _cache_local_dir:
+        rsync_cache_back(_cache_local_dir, verbose=True)
 
     sys.exit(143)
 
@@ -199,7 +277,7 @@ def run_backup(config: dict) -> int:
     Returns:
         Exit code (0 = success)
     """
-    global _borg_process, _borg_repo
+    global _borg_process, _borg_repo, _cache_local_dir, _cache_the_cache_enabled
 
     # Validate backup-specific fields
     validate_backup_config(config)
@@ -210,12 +288,23 @@ def run_backup(config: dict) -> int:
     backup_dir = config['backupDir']
     lock_wait = config['lockWait']
     retention = config.get('retention', {})
+    cache_the_cache = config.get('cacheTheCache', False)
 
     _borg_repo = borg_repo
+    _cache_the_cache_enabled = cache_the_cache
+
+    # Handle cache-the-cache feature
+    cache_dir = '/cache'  # Default PVC mount
+    if cache_the_cache:
+        cache_local = '/tmp/borg-cache-local'
+        _cache_local_dir = cache_local
+        rsync_cache_startup(cache_local)
+        cache_dir = cache_local
+        logger.info(f"Using ephemeral cache at {cache_dir}")
 
     # Setup SSH and environment using common functions
     ssh_key_file = setup_ssh_key(config['sshPrivateKey'])
-    env = get_borg_env(config, ssh_key_file)
+    env = get_borg_env(config, ssh_key_file, cache_dir=cache_dir)
 
     logger.info(f"Starting backup: {prefix}")
     logger.info(f"Lock wait timeout: {lock_wait}s")
@@ -357,6 +446,11 @@ def run_backup(config: dict) -> int:
         logger.info("No retention policy specified, skipping prune")
 
     logger.info("Backup successful!")
+
+    # Rsync cache back if cache-the-cache enabled (quiet mode for normal shutdown)
+    if cache_the_cache and _cache_local_dir:
+        rsync_cache_back(_cache_local_dir, verbose=False)
+
     return 0
 
 

@@ -132,6 +132,12 @@ restore:
 #         pvcName: myapp-borg-cache
 #         storageClassName: local-path
 #         size: 5Gi
+#         # cacheTheCache: Copies cache from PVC to ephemeral local storage on startup for faster borg operations, then syncs back on shutdown.
+#         # WARNING: If pod is terminated before rsync completes, cache may be inconsistent (data not lost, just cache rebuild slower next run).
+#         # IMPORTANT: Only one pod should mount the cache PVC simultaneously to avoid conflicts (use ReadWriteOncePod access mode).
+#         cacheTheCache: false  # Default: false
+#         accessModes:
+#           - ReadWriteOncePod  # Default: ReadWriteOncePod (recommended for borg cache)
 #       pvcs:
 #         - name: db-backup  # Becomes "{app}-db-backup" in borg archive
 #           pvc: db-data     # Source PVC (must have snapshot)

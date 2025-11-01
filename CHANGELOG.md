@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.8] - 2025-11-01
+
+### Added
+
+- **Cache-The-Cache Feature:** Performance optimization for borg backup operations
+  - New Helm values: `cache.cacheTheCache` (default false) enables ephemeral local cache
+  - Startup: rsync cache from PVC to `/tmp/borg-cache-local/` for faster access
+  - Operations: Borg uses local ephemeral storage instead of PVC-mounted cache (reduced I/O latency)
+  - Normal shutdown: rsync back to PVC with summary stats (quiet mode)
+  - SIGTERM shutdown: rsync back with verbose file-by-file progress for debugging
+  - Configurable `cache.accessModes` (default ReadWriteOncePod) to prevent concurrent pod access
+  - Aborts backup if startup rsync fails, exits with error if shutdown rsync fails
+  - No timeouts on rsync operations (controller handles pod termination)
+  - Documentation in values.yaml explains inconsistency risk and single-pod requirement
+  - Files: `backup.py` (3 new functions), `common.py` (cache_dir parameter), controller `main.py` (6 locations), Helm templates
+  - Commit: [commit hash]
+
+### Changed
+
+- **Signal Handling Grace Period:** Reduced from 20s to 10s for borg checkpoint wait
+  - Faster termination on SIGTERM/SIGINT while still allowing graceful checkpoint
+  - File: `apps/backup-runner/backup.py` (line 259)
+
+### Fixed
+
+- **Controller Secret Creation Bug:** Fixed cache-the-cache flag not passed to backup-runner pods
+  - Root cause: `create_borg_secret()` wasn't including `cacheTheCache` in dynamic Secret
+  - Added `cache_the_cache` parameter through entire call chain (6 locations)
+  - Bug prevented feature from activating even when enabled in values.yaml
+  - File: `apps/controller/kube_snapshot_borgbackup/main.py` (lines 355, 383, 923, 999, 1080, 1117)
+
 ## [6.0.7] - 2025-11-01
 
 ### Fixed

@@ -352,6 +352,7 @@ def create_borg_secret(
     backup_name: str,
     backup_dir: str,
     lock_wait: int,
+    cache_the_cache: bool,
     namespace: str
 ) -> None:
     """Create ephemeral secret with borg configuration file.
@@ -379,6 +380,7 @@ def create_borg_secret(
         "prefix": backup_name,
         "backupDir": backup_dir,
         "lockWait": lock_wait,
+        "cacheTheCache": cache_the_cache,
     }
 
     # Add retention if specified
@@ -914,6 +916,7 @@ def process_backup_with_clone(
     borg_passphrase: str,
     ssh_private_key: str,
     cache_pvc: str,
+    cache_the_cache: bool,
     retention: dict[str, int],
     namespace: str,
     test_mode: bool
@@ -993,7 +996,7 @@ def process_backup_with_clone(
             v1, config_secret_name,
             borg_repo, borg_passphrase, ssh_private_key,
             retention, name, "/data", timeout,
-            namespace
+            cache_the_cache, namespace
         )
         log_msg("✅ Config secret created")
 
@@ -1075,6 +1078,7 @@ def main() -> None:
     borg_passphrase = cfg.get("borgPassphrase")
     ssh_private_key = cfg.get("sshPrivateKey")
     cache_pvc = cfg.get("cachePVC", "borg-cache")
+    cache_the_cache = cfg.get("cacheTheCache", False)
     retention = cfg.get("retention", {})
 
     if not all([borg_repo, borg_passphrase, ssh_private_key]):
@@ -1108,7 +1112,7 @@ def main() -> None:
     for clone_pvc in clone_pvcs:
         _ = process_backup_with_clone(  # Result unused, failures tracked in _failures global
             clone_pvc, v1, release_name, pod_config,
-            borg_repo, borg_passphrase, ssh_private_key, cache_pvc,
+            borg_repo, borg_passphrase, ssh_private_key, cache_pvc, cache_the_cache,
             retention, namespace, test_mode
         )
         # Continue even on failure (report all failures at end)

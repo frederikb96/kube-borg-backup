@@ -93,12 +93,13 @@ def setup_ssh_key(ssh_key_content: str) -> str:
         sys.exit(1)
 
 
-def get_borg_env(config: dict, ssh_key_file: str) -> dict:
+def get_borg_env(config: dict, ssh_key_file: str, cache_dir: str = '/cache') -> dict:
     """Build environment variables for borg commands.
 
     Args:
         config: Configuration dictionary with borgRepo and borgPassphrase
         ssh_key_file: Path to SSH private key file
+        cache_dir: Path to borg cache directory (default: /cache)
 
     Returns:
         Environment dictionary with BORG_* variables set
@@ -107,7 +108,7 @@ def get_borg_env(config: dict, ssh_key_file: str) -> dict:
     env['BORG_REPO'] = config['borgRepo']
     env['BORG_PASSPHRASE'] = config['borgPassphrase']
     env['BORG_RSH'] = f"ssh -o IdentityFile={ssh_key_file} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no"
-    env['BORG_CACHE_DIR'] = '/cache'  # Cache mounted at /cache by Kubernetes
+    env['BORG_CACHE_DIR'] = cache_dir
 
     return env
 

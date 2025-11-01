@@ -53,6 +53,9 @@ apps:
         pvcName: test-borg-cache
         storageClassName: local-path
         size: 2Gi
+        cacheTheCache: false  # Copy cache to ephemeral local storage for faster access
+        accessModes:
+          - ReadWriteOncePod
       pvcs:
         # Archive will be named "test-postgres-data-TIMESTAMP"
         - name: postgres-data
