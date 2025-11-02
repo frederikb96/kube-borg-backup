@@ -23,19 +23,15 @@ Developed specifically to solve the problem of backing up complex Kubernetes app
 ### Required
 
 - **Kubernetes 1.25+**
-- **CSI driver with VolumeSnapshot support**
-  - For snapshot functionality
-  - Examples: Longhorn, Ceph RBD, ZFS, AWS EBS CSI, etc.
-  - Storage class must support CSI snapshots (creates `VolumeSnapshot` resources)
-  - **Longhorn users:** Enhanced readiness detection automatically handles clone PVC timing issues
-- **Storage class with snapshot cloning support**
-  - For backup functionality (creates clone PVCs from snapshots)
-  - Clone PVCs must be creatable via `dataSource: VolumeSnapshot`
-  - Recommended: Use storage class with "Delete" reclaim policy for automatic clone cleanup
-- **VolumeSnapshotClass configured** in cluster
 - **BorgBackup repository** (e.g., BorgBase, self-hosted)
 
-### Verification
+### Snapshot-Based Mode (Recommended)
+
+Enables instant recovery + async backup with zero application downtime:
+
+- **CSI driver with VolumeSnapshot support** (Longhorn, Ceph RBD, ZFS, AWS EBS CSI, etc.)
+- **Storage class with snapshot cloning support** (creates clone PVCs from snapshots)
+- **VolumeSnapshotClass configured** in cluster
 
 ```bash
 # Check CSI driver supports snapshots
@@ -56,6 +52,14 @@ spec:
   volumeSnapshotClassName: <your-snapshot-class>
 EOF
 ```
+
+### Direct Mode (Without Snapshots)
+
+For storage classes without CSI snapshot support (e.g., NFS, HostPath):
+
+- Set `snapshotted: false` per PVC in values.yaml (see detailed configuration in helm values)
+- **Requires:** RWX access mode OR unbound PVC during backup window
+- **Note:** Application downtime may be needed to safely unmount PVC before backup and not consistent data during backup if app is running!
 
 ## Features
 
@@ -158,8 +162,8 @@ All configuration is done via Helm values. See the following files for detailed 
 3. **Snapshots** are created in parallel via CSI driver for instant point-in-time capture
 4. **Post-hooks** execute sequentially after snapshots (e.g., `pg_backup_stop()` to resume writes)
 5. **Tiered retention** prunes old snapshots keeping 1 per time bucket (hourly/daily/weekly/monthly)
-6. **Backup Controller** runs as separate CronJob and finds latest snapshots
-7. **Clone PVCs** are created from snapshots with temporary storage class
+6. **Backup Controller** runs as separate CronJob and finds latest snapshots or uses direct PVCs if configured without snapshots
+7. **Clone PVCs** are created from snapshots with temporary storage class if snapshot-based mode is used
 8. **Borg pods** are spawned dynamically (one per PVC) and run privileged to access any filesystem
 9. **Backups** execute sequentially (Borg limitation) with configurable timeouts and lock handling
 10. **Cleanup** happens automatically: borg pods deleted, clone PVCs removed, secrets cleaned up

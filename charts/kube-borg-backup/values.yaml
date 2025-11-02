@@ -145,6 +145,7 @@ restore:
 #           timeout: 3600
 #           cloneBindTimeout: 300
 #           # borgFlags: ["--stats"]  # Optional: borg create flags (default: ["--stats"])
+#           # snapshotted: false  # Default: true. When false, backup original PVC directly (read-only mount, no snapshot). Requires RWX or unbound PVC.
 #
 #     # Restore hooks (v6.0.0+)
 #     restore:

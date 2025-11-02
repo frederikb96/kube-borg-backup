@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.1.0] - 2025-11-02
+
+### Added
+- **Direct PVC backup mode (snapshot-free)**: New `snapshotted: false` flag per PVC enables backups without CSI snapshot support
+  - Mount original PVC directly (read-only) instead of creating snapshot clones
+  - Requires RWX access mode or unbound PVC during backup window
+  - Backward compatible (default `snapshotted: true`)
+  - Makes CSI snapshots optional - works with NFS, HostPath, and other non-snapshot storage classes
+
+### Changed
+- **README**: Restructured prerequisites to separate snapshot-based vs direct backup modes
+- **values.yaml**: Added `snapshotted` flag documentation with usage examples
+- **Controller**: Dual-mode backup processing (clone-based + direct PVC)
+- **Template**: Uses `hasKey` for proper boolean handling (fixes false value detection)
+
+### Technical Details
+- Controller creates separate backup queues: snapshot-based (clone PVCs) and direct (original PVCs)
+- Direct backups skip VolumeSnapshot/clone creation, spawn backup pod with original PVC mounted read-only
+- Template sets `class: null` and `cloneBindTimeout: null` when `snapshotted: false` for safety
+- All linters passing (ruff + mypy)
+
 ## [6.0.9] - 2025-11-01
 
 ### Added

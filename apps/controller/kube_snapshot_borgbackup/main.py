@@ -862,12 +862,12 @@ def create_all_clone_pvcs(
     storage_api: client.StorageV1Api,
     backups: list[dict[str, Any]],
     namespace: str
-) -> list[ClonePVC]:
-    """Create all clone PVCs in parallel (non-blocking).
+) -> tuple[list[ClonePVC], list[dict[str, Any]]]:
+    """Create clone PVCs in parallel for snapshot-based backups.
 
-    This function starts all clone PVC creation requests in parallel but
-    does NOT wait for them to be ready. Each clone will be checked
-    individually in Phase 2 right before its backup runs.
+    Separates backups into two categories:
+    - Snapshot-based (snapshotted=true): creates clone PVCs from snapshots
+    - Direct (snapshotted=false): skips clone creation, backs up original PVC
 
     Args:
         v1: CoreV1Api client
@@ -877,36 +877,51 @@ def create_all_clone_pvcs(
         namespace: Kubernetes namespace
 
     Returns:
-        List of ClonePVC objects (ready state unknown at return time)
+        Tuple of (clone_pvcs, direct_pvcs)
     """
     log_msg(f"\n{'='*60}")
-    log_msg("📦 Phase 1: Creating ALL clone PVCs in parallel")
+    log_msg("📦 Phase 1: Separating snapshot-based and direct backups")
     log_msg(f"{'='*60}")
 
     clone_pvcs: list[ClonePVC] = []
+    direct_pvcs: list[dict[str, Any]] = []
 
-    # Create all clone PVCs in parallel using ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=len(backups)) as executor:
-        futures = {
-            executor.submit(
-                create_single_clone_pvc,
-                v1, snap_api, storage_api, backup_cfg, namespace
-            ): backup_cfg
-            for backup_cfg in backups
-        }
+    # Separate backups by mode
+    snapshot_backups = []
+    for backup_cfg in backups:
+        snapshotted = backup_cfg.get("snapshotted", True)
+        if snapshotted:
+            snapshot_backups.append(backup_cfg)
+        else:
+            direct_pvcs.append(backup_cfg)
+            log_msg(f"📌 [{backup_cfg.get('name')}] Direct mode - will backup original PVC")
 
-        for future in futures:
-            clone_pvc = future.result()
-            clone_pvcs.append(clone_pvc)
+    if snapshot_backups:
+        log_msg(f"\n🔄 Creating {len(snapshot_backups)} clone PVC(s) in parallel...")
+        # Create clone PVCs in parallel using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=len(snapshot_backups)) as executor:
+            futures = {
+                executor.submit(
+                    create_single_clone_pvc,
+                    v1, snap_api, storage_api, backup_cfg, namespace
+                ): backup_cfg
+                for backup_cfg in snapshot_backups
+            }
 
-            if clone_pvc.failed:
-                log_msg(f"❌ [{clone_pvc.backup_name}] Clone creation failed: {clone_pvc.failure_reason}")
-                _failures.append(f"{clone_pvc.backup_name}: {clone_pvc.failure_reason}")
+            for future in futures:
+                clone_pvc = future.result()
+                clone_pvcs.append(clone_pvc)
 
-    log_msg("✅ All clone PVC creation requests submitted in parallel")
-    log_msg("📝 Note: Clone PVCs will be checked individually before each backup")
+                if clone_pvc.failed:
+                    log_msg(f"❌ [{clone_pvc.backup_name}] Clone creation failed: {clone_pvc.failure_reason}")
+                    _failures.append(f"{clone_pvc.backup_name}: {clone_pvc.failure_reason}")
 
-    return clone_pvcs
+        log_msg("✅ All clone PVC creation requests submitted in parallel")
+        log_msg("📝 Note: Clone PVCs will be checked individually before each backup")
+
+    log_msg(f"\n📊 Backup mode summary: {len(clone_pvcs)} snapshot-based, {len(direct_pvcs)} direct")
+
+    return clone_pvcs, direct_pvcs
 
 
 def process_backup_with_clone(
@@ -1037,6 +1052,105 @@ def process_backup_with_clone(
             delete_pvc(v1, clone_pvc.clone_name, namespace)
 
 
+def process_direct_backup(
+    name: str,
+    pvc: str,
+    timeout: int,
+    borg_flags: list[str],
+    v1: client.CoreV1Api,
+    release_name: str,
+    pod_config: dict[str, Any],
+    borg_repo: str,
+    borg_passphrase: str,
+    ssh_private_key: str,
+    cache_pvc: str,
+    cache_the_cache: bool,
+    retention: dict[str, int],
+    namespace: str,
+    test_mode: bool
+) -> bool:
+    """Process a direct backup: mount original PVC (read-only) and backup.
+
+    Args:
+        name: Backup name
+        pvc: Original PVC name
+        timeout: Backup timeout in seconds
+        borg_flags: Borg create flags
+        v1: CoreV1Api client
+        release_name: Helm release fullname
+        pod_config: Pod configuration
+        borg_repo: Borg repository URL
+        borg_passphrase: Borg passphrase
+        ssh_private_key: SSH private key content
+        cache_pvc: Borg cache PVC name
+        cache_the_cache: Enable cache-the-cache
+        retention: Retention policy
+        namespace: Kubernetes namespace
+        test_mode: If True, skip borg pod spawn
+
+    Returns:
+        True if successful, False if failed
+    """
+    log_msg(f"\n{'='*60}")
+    log_msg(f"🔄 Processing DIRECT backup: {name}")
+    log_msg(f"{'='*60}")
+    log_msg(f"📌 Using original PVC: {pvc} (read-only mount)")
+
+    pod_name = None
+    config_secret_name = None
+
+    try:
+        # Spawn borg pod (or skip in test mode)
+        if test_mode:
+            log_msg(f"🧪 TEST MODE: Skipping borg pod spawn for {name}")
+            log_msg("🧪 TEST MODE: Simulating 2 second backup...")
+            time.sleep(2)
+            log_msg("✅ TEST MODE: Backup simulation successful")
+            return True
+
+        # Create ephemeral secret with config file
+        ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+        pod_name = f"{release_name}-backup-runner-{name}-{ts}"
+        config_secret_name = f"{pod_name}-config"
+        log_msg(f"🔐 Creating ephemeral config secret: {config_secret_name}")
+        create_borg_secret(
+            v1, config_secret_name,
+            borg_repo, borg_passphrase, ssh_private_key,
+            retention, name, "/data", timeout,
+            cache_the_cache, borg_flags, namespace
+        )
+
+        # Build and spawn borg pod with original PVC
+        log_msg(f"🚀 Spawning borg pod: {pod_name}")
+        manifest = build_borg_pod_manifest(
+            pod_name, name, pvc, pod_config,  # Use original PVC instead of clone
+            config_secret_name, cache_pvc,
+            timeout, namespace
+        )
+
+        if not spawn_borg_pod(v1, manifest, namespace, timeout):
+            log_msg(f"❌ Borg backup failed for {name}")
+            _failures.append(f"{name}: Borg pod failed")
+            return False
+
+        log_msg(f"✅ [{name}] Direct backup completed successfully")
+        return True
+
+    except Exception as exc:
+        log_msg(f"❌ [{name}] Unexpected error during direct backup: {exc}")
+        _failures.append(f"{name}: {exc}")
+        return False
+
+    finally:
+        # Always cleanup (no clone PVC to delete)
+        if config_secret_name:
+            log_msg(f"🗑️  Cleaning up config secret: {config_secret_name}")
+            delete_secret(v1, config_secret_name, namespace)
+        if pod_name:
+            log_msg(f"🗑️  Cleaning up borg pod: {pod_name}")
+            delete_pod(v1, pod_name, namespace)
+
+
 def main() -> None:
     """Main execution flow with optimized two-phase approach.
 
@@ -1104,14 +1218,15 @@ def main() -> None:
     log_msg(f"📋 Retention: {retention}")
     log_msg("📋 Strategy: Start all clones in parallel → Wait individually per backup")
 
-    # Phase 1: Create ALL clone PVCs in parallel
-    clone_pvcs = create_all_clone_pvcs(v1, snap_api, storage_api, backups, namespace)
+    # Phase 1: Create clone PVCs (snapshot-based) and identify direct backups
+    clone_pvcs, direct_pvcs = create_all_clone_pvcs(v1, snap_api, storage_api, backups, namespace)
 
     # Phase 2: Process backups SEQUENTIALLY (borg repo only supports one writer)
     log_msg(f"\n{'='*60}")
     log_msg("🔄 Phase 2: Processing backups SEQUENTIALLY")
     log_msg(f"{'='*60}")
 
+    # Process snapshot-based backups (with clone PVCs)
     for clone_pvc in clone_pvcs:
         # Extract borgFlags from backup config
         borg_flags = clone_pvc.backup_config.get("borgFlags", ["--stats"])
@@ -1120,6 +1235,26 @@ def main() -> None:
             clone_pvc, v1, release_name, pod_config,
             borg_repo, borg_passphrase, ssh_private_key, cache_pvc, cache_the_cache,
             borg_flags, retention, namespace, test_mode
+        )
+        # Continue even on failure (report all failures at end)
+
+    # Process direct backups (original PVCs, no clone)
+    for direct_backup in direct_pvcs:
+        name = direct_backup.get("name", "unnamed")
+        pvc = direct_backup.get("pvc")
+        timeout = direct_backup.get("timeout")
+        borg_flags = direct_backup.get("borgFlags", ["--stats"])
+
+        if not pvc or not timeout:
+            log_msg(f"❌ [{name}] Direct backup config missing pvc or timeout")
+            _failures.append(f"{name}: Config error - missing required fields")
+            continue
+
+        _ = process_direct_backup(
+            name, pvc, timeout, borg_flags,
+            v1, release_name, pod_config,
+            borg_repo, borg_passphrase, ssh_private_key, cache_pvc, cache_the_cache,
+            retention, namespace, test_mode
         )
         # Continue even on failure (report all failures at end)
 
