@@ -164,6 +164,39 @@ Usage: {{ include "kube-borg-backup.validateSnapshotConfig" (dict "appName" .nam
 {{- if not .config.pvcs -}}
 {{- fail (printf "App '%s': snapshot.pvcs is REQUIRED but not specified" .appName) -}}
 {{- end -}}
+{{- $_ := include "kube-borg-backup.validateHookSessions" (dict "appName" .appName "config" .config) -}}
+{{- end -}}
+
+{{/*
+Validate sessionId constraints in snapshot hooks
+Usage: {{ include "kube-borg-backup.validateHookSessions" (dict "appName" .appName "config" $snapshotConfig) }}
+*/}}
+{{- define "kube-borg-backup.validateHookSessions" -}}
+{{- $sessions := dict -}}
+{{- range .config.pvcs -}}
+  {{- if .hooks -}}
+    {{- range $hookType, $hookList := .hooks -}}
+      {{- range $hookList -}}
+        {{- if .sessionId -}}
+          {{- if not .pod -}}
+            {{- fail (printf "App '%s': sessionId requires 'pod' field (exec hook only)" $.appName) -}}
+          {{- end -}}
+          {{- if not .command -}}
+            {{- fail (printf "App '%s': sessionId requires 'command' field (exec hook only)" $.appName) -}}
+          {{- end -}}
+          {{- $existingPod := index $sessions .sessionId -}}
+          {{- if $existingPod -}}
+            {{- if ne $existingPod .pod -}}
+              {{- fail (printf "App '%s': sessionId '%s' used with different pods ('%s' != '%s')" $.appName .sessionId $existingPod .pod) -}}
+            {{- end -}}
+          {{- else -}}
+            {{- $_ := set $sessions .sessionId .pod -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/*

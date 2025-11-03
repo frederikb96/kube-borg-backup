@@ -119,9 +119,13 @@ restore:
 #           hooks:  # Optional: pre/post snapshot hooks
 #             pre:
 #               - pod: postgres-0
+#                 container: postgres  # Optional
+#                 sessionId: pg-session  # Optional: Links pre/post hooks in same exec session (required for PostgreSQL pg_backup_start/stop)
 #                 command: ["psql", "-c", "SELECT pg_backup_start();"]
 #             post:
 #               - pod: postgres-0
+#                 container: postgres  # Optional
+#                 sessionId: pg-session  # Same sessionId keeps session alive between pre/post hooks (only valid for exec hooks)
 #                 command: ["psql", "-c", "SELECT pg_backup_stop();"]
 #
 #     # Borg backup config

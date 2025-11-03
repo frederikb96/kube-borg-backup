@@ -31,6 +31,7 @@ apps:
             pre:
               - pod: postgres-0
                 container: postgres
+                sessionId: pg-backup-session  # Links pre/post hooks in same session (required for pg_backup_start/stop)
                 command:
                   - /bin/sh
                   - -c
@@ -39,6 +40,7 @@ apps:
             post:
               - pod: postgres-0
                 container: postgres
+                sessionId: pg-backup-session  # Same sessionId keeps psql session alive between hooks
                 command:
                   - /bin/sh
                   - -c
