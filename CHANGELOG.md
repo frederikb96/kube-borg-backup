@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.2.0] - 2025-11-03
+
+### Added
+- **User-defined hook execution order**: Snapshot hooks now execute in YAML order, not separated by type
+  - `wait: false` hooks start in background and continue immediately to next hook
+  - `wait: true` (default) hooks block until completion before proceeding
+  - Enables precise control over hook timing relative to snapshot creation
+  - PostgreSQL backup pattern: `wait: false` pg_backup hook + blocking `sleep 5` delays snapshots after checkpoint
+
+### Changed
+- **Controller**: Refactored pre-hook execution from separate blocking/background lists to single ordered loop
+  - Simpler code (~30 lines less), more intuitive mental model
+  - Hooks execute in exact user-specified order from YAML
+  - Backward compatible (wait defaults to true)
+- **values.yaml**: Updated documentation with execution order examples
+- **test/example values**: Added blocking sleep hook pattern for PostgreSQL backups
+
+### Fixed
+- **Type safety**: Added runtime check for background hook executor initialization
+
+### Technical Details
+- Single loop respects YAML hook order: wait:false starts ThreadPoolExecutor task, wait:true blocks with execute_hooks()
+- Background hooks tracked in futures dict, awaited after snapshot creation completes
+- All linters passing (ruff + mypy)
+- Production tested with PostgreSQL backup mode spanning snapshot creation
+
 ## [6.1.0] - 2025-11-02
 
 ### Added

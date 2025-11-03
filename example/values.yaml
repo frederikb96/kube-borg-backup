@@ -31,19 +31,20 @@ apps:
             pre:
               - pod: postgres-0
                 container: postgres
+                wait: false  # Background: pg_backup_start + sleep + pg_backup_stop
                 command:
                   - /bin/sh
                   - -c
                   - |
-                    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT pg_backup_start('snapshot-test', true);"
-            post:
+                    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'EOSQL'
+                    SELECT pg_backup_start('snapshot-test', true);
+                    \! sleep 30
+                    SELECT pg_backup_stop(true);
+                    EOSQL
               - pod: postgres-0
                 container: postgres
-                command:
-                  - /bin/sh
-                  - -c
-                  - |
-                    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT pg_backup_stop(true);" || echo "No backup in progress"
+                # wait: true (default) - Blocks to delay snapshots after checkpoint
+                command: ["sleep", "5"]
 
     # BorgBackup configuration
     borgbackup:

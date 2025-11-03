@@ -116,13 +116,21 @@ restore:
 #       pvcs:
 #         - name: db-data
 #           snapshotClass: longhorn
-#           hooks:  # Optional: pre/post snapshot hooks
+#           hooks:  # Optional: pre/post snapshot hooks (executed in order)
 #             pre:
+#               # Hooks execute in user-defined order:
+#               # - wait: false → starts in background, continues immediately
+#               # - wait: true (default) → blocks until completion
 #               - pod: postgres-0
-#                 command: ["psql", "-c", "SELECT pg_backup_start();"]
+#                 container: postgres  # Optional
+#                 wait: false  # Background: runs during snapshot creation
+#                 command: ["sh", "-c", "psql <<'EOF'\nSELECT pg_backup_start(...);\n\\! sleep 30\nSELECT pg_backup_stop(...);\nEOF"]
+#               - pod: postgres-0
+#                 # wait: true (default) - blocks here to delay snapshot start
+#                 command: ["sleep", "5"]
 #             post:
 #               - pod: postgres-0
-#                 command: ["psql", "-c", "SELECT pg_backup_stop();"]
+#                 command: ["echo", "Snapshot complete"]
 #
 #     # Borg backup config
 #     borgbackup:

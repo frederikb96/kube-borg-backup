@@ -419,19 +419,50 @@ def main() -> None:
         all_post_hooks.extend(post_hooks)
 
     snapshot_failed = False
+    background_hook_futures: dict[str, concurrent.futures.Future] = {}
+    hook_executor = None
 
     try:
-        # Step 1: Run all pre-hooks sequentially (fail-fast)
+        # Step 1: Execute pre-hooks in user-defined order
         if all_pre_hooks:
-            # Transform hooks to common library format
-            transformed_pre_hooks = transform_hooks_to_common_format(all_pre_hooks)
-
             print(f"\n{'='*60}")
-            print(f"🔄 Running pre-hooks ({len(transformed_pre_hooks)} total)")
+            print(f"🔄 Executing pre-hooks ({len(all_pre_hooks)} total)")
             print(f"{'='*60}\n")
 
-            # Execute with common hooks library
-            execute_hooks(api_client, namespace, transformed_pre_hooks, mode="pre")
+            # Count background hooks to create executor
+            num_background = sum(1 for h in all_pre_hooks if not h.get('wait', True))
+            if num_background > 0:
+                hook_executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_background)
+
+            # Execute hooks in order
+            for i, hook in enumerate(all_pre_hooks):
+                hook_id = f"pre-hook-{i}"
+
+                if hook.get('wait', True):  # Blocking hook (default)
+                    transformed = transform_hooks_to_common_format([hook])
+                    print(f"⏳ [{hook_id}] Executing (blocking)...")
+                    execute_hooks(api_client, namespace, transformed, mode="pre")
+                    print(f"✅ [{hook_id}] Completed")
+                else:  # Background hook
+                    if hook_executor is None:
+                        raise RuntimeError("Background hook encountered but executor not initialized")
+
+                    transformed = transform_hooks_to_common_format([hook])
+
+                    def execute_background_hook(hook_config, hook_name):
+                        """Background task for non-blocking hook."""
+                        print(f"🚀 [Background {hook_name}] Starting...")
+                        try:
+                            execute_hooks(api_client, namespace, hook_config, mode="pre")
+                            print(f"✅ [Background {hook_name}] Completed")
+                            return {'hook': hook_name, 'success': True}
+                        except Exception as e:
+                            print(f"❌ [Background {hook_name}] Failed: {e}", file=sys.stderr)
+                            raise
+
+                    future = hook_executor.submit(execute_background_hook, transformed, hook_id)
+                    background_hook_futures[hook_id] = future
+                    print(f"🚀 [{hook_id}] Started in background")
 
         # Step 2: Create snapshots in parallel
         print(f"\n{'='*60}")
@@ -464,12 +495,26 @@ def main() -> None:
                 if pvc_name:
                     prune_snapshots_tiered(custom_api, pvc_name, retention, namespace)
 
+        # Step 4: Wait for background pre-hooks to complete
+        if background_hook_futures:
+            print(f"\n{'='*60}")
+            print(f"⏳ Waiting for {len(background_hook_futures)} background pre-hook(s) to complete")
+            print(f"{'='*60}\n")
+
+            for hook_id, future in background_hook_futures.items():
+                try:
+                    result = future.result()  # Block until hook completes
+                    print(f"✅ [{hook_id}] Background hook completed: {result}")
+                except Exception as exc:
+                    print(f"❌ [{hook_id}] Background hook failed: {exc}", file=sys.stderr)
+                    snapshot_failed = True
+
     except Exception as exc:
         print(f"\n❌ Error during snapshot process: {exc}", file=sys.stderr)
         snapshot_failed = True
 
     finally:
-        # Step 4: ALWAYS run post-hooks (even on failure)
+        # Step 5: ALWAYS run post-hooks (even on failure)
         if all_post_hooks:
             try:
                 # Transform hooks to common library format
