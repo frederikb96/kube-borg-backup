@@ -7,7 +7,7 @@ long_description = readme.read_text() if readme.exists() else ""
 
 setup(
     name='kube-borg-backup-cli',
-    version='6.2.0',  # Hook execution order feature
+    version='6.2.1',  # Exit code 1 warning handling
     author='Frederik Berg',
     description='CLI tool for kube-borg-backup restore operations',
     long_description=long_description,

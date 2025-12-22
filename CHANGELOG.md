@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.2.1] - 2025-12-22
+
+### Fixed
+- **Borg exit code 1 handling**: Treat exit code 1 as success with warning instead of failure
+  - Exit code 1 means operation completed with warnings (e.g., file not found, permission denied)
+  - Archive is still created and valid
+  - Applies to: borg create, borg prune, borg list, borg mount
+  - Matches borgmatic's default behavior
+  - Prevents false failure alerts for transient issues like temp files deleted during backup
+
 ## [6.2.0] - 2025-11-03
 
 ### Added
