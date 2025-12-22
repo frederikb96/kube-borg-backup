@@ -136,7 +136,12 @@ def list_archives(config: dict, env: dict) -> int:
         exit_code = _borg_process.returncode
         _borg_process = None
 
-        if exit_code != 0:
+        if exit_code == 1:
+            # Exit code 1 = warnings, list completed successfully
+            logger.warning("⚠️ borg list completed with warnings (exit code 1)")
+            if stderr:
+                logger.warning(stderr)
+        elif exit_code != 0:
             logger.error(f"borg list failed with exit code {exit_code}")
             logger.error(stderr)
             return exit_code

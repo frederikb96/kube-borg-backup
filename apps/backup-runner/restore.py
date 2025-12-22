@@ -97,7 +97,10 @@ def mount_archive_background(archive: str, mount_point: Path, env: dict) -> None
         # Wait for borg mount to exit (happens on unmount or error)
         exit_code = _borg_process.wait()
 
-        if exit_code != 0:
+        if exit_code == 1:
+            # Exit code 1 = warnings, mount/unmount completed successfully
+            logger.warning("⚠️ FUSE mount exited with warnings (exit code 1)")
+        elif exit_code != 0:
             logger.error(f"FUSE mount exited with code {exit_code}")
         else:
             logger.info("FUSE mount exited successfully")

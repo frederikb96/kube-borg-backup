@@ -444,7 +444,12 @@ def run_backup(config: dict) -> int:
             stop_heartbeat.set()
             heartbeat_thread.join(timeout=2)
 
-        if exit_code != 0:
+        if exit_code == 1:
+            # Exit code 1 = warnings (e.g., file not found, permission denied on some files)
+            # Archive was created successfully, treat as success with warning
+            logger.warning("⚠️ Borg completed with warnings (exit code 1) - archive created successfully")
+            logger.warning("Check logs above for specific warnings (missing files, permissions, etc)")
+        elif exit_code != 0:
             logger.error(f"Borg exited with code: {exit_code}")
             return exit_code
 
@@ -483,7 +488,10 @@ def run_backup(config: dict) -> int:
                 timeout=lock_wait
             )
 
-            if result.returncode != 0:
+            if result.returncode == 1:
+                # Exit code 1 = warnings, prune completed successfully
+                logger.warning("⚠️ Prune completed with warnings (exit code 1)")
+            elif result.returncode != 0:
                 logger.error(f"Prune failed with exit code: {result.returncode}")
                 return result.returncode
 
