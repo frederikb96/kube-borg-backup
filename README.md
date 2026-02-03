@@ -1,15 +1,19 @@
-<p align="center">
-  <img src="docs/logo.png" alt="kube-borg-backup logo" width="150">
-</p>
-
-# kube-borg-backup
-
 [![Release](https://img.shields.io/github/v/release/frederikb96/kube-borg-backup)](https://github.com/frederikb96/kube-borg-backup/releases)
 [![License](https://img.shields.io/github/license/frederikb96/kube-borg-backup)](LICENSE)
 [![Release Pipeline](https://img.shields.io/github/actions/workflow/status/frederikb96/kube-borg-backup/release-pipeline.yaml?label=release-pipeline)](https://github.com/frederikb96/kube-borg-backup/actions/workflows/release-pipeline.yaml)
 [![Helm Chart](https://img.shields.io/badge/helm-chart-blue)](https://frederikb96.github.io/kube-borg-backup)
 
-Kubernetes backup solution combining **instant CSI snapshots** with **async BorgBackup** for production-grade application backups.
+<table>
+<tr>
+<td width="140">
+<img src="docs/logo.png" alt="kube-borg-backup" width="120">
+</td>
+<td>
+<h1>kube-borg-backup</h1>
+Instant CSI snapshots + async BorgBackup for production-grade Kubernetes application backups
+</td>
+</tr>
+</table>
 
 ## Why kube-borg-backup?
 
