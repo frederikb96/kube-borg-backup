@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="kube-borg-backup logo" width="150">
+</p>
+
 # kube-borg-backup
 
 [![Release](https://img.shields.io/github/v/release/frederikb96/kube-borg-backup)](https://github.com/frederikb96/kube-borg-backup/releases)
