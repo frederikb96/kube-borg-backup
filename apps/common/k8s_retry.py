@@ -7,13 +7,11 @@ connection failures, and 409 Conflict (idempotent create).
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
 
 from kubernetes.client.rest import ApiException
 
 from common.pod_monitor import log_msg
-
-T = TypeVar("T")
 
 # HTTP status codes that indicate transient server-side failures
 TRANSIENT_STATUS_CODES = {500, 502, 503, 504}
@@ -56,7 +54,7 @@ def _is_conflict(exc: Exception) -> bool:
     return isinstance(exc, ApiException) and exc.status == 409
 
 
-def k8s_api_retry(
+def k8s_api_retry[T](
     operation: Callable[[], T],
     context: str,
     on_conflict: Callable[[], T] | None = None,
