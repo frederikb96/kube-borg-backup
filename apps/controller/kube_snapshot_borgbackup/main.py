@@ -31,6 +31,7 @@ from kubernetes import client, config as k8s_config
 from kubernetes.client.rest import ApiException
 from kubernetes.config.config_exception import ConfigException
 
+from common.k8s_retry import k8s_api_retry
 from common.pod_monitor import PodMonitor
 
 SNAP_GROUP = "snapshot.storage.k8s.io"
@@ -338,7 +339,11 @@ def create_clone_pvc(
         },
     }
 
-    v1.create_namespaced_persistent_volume_claim(namespace, body)
+    k8s_api_retry(
+        operation=lambda: v1.create_namespaced_persistent_volume_claim(namespace, body),
+        context=f"creating clone PVC {clone_name}",
+        on_conflict=lambda: v1.read_namespaced_persistent_volume_claim(clone_name, namespace),
+    )
     _tracked_resources["clone_pvcs"].append(clone_name)
 
 
@@ -410,7 +415,11 @@ def create_borg_secret(
         }
     )
 
-    v1.create_namespaced_secret(namespace, body)
+    k8s_api_retry(
+        operation=lambda: v1.create_namespaced_secret(namespace, body),
+        context=f"creating config secret {secret_name}",
+        on_conflict=lambda: v1.read_namespaced_secret(secret_name, namespace),
+    )
     _tracked_resources["ssh_secrets"].append(secret_name)
 
 
@@ -673,7 +682,11 @@ def spawn_borg_pod(
     pod_name = manifest["metadata"]["name"]
 
     try:
-        v1.create_namespaced_pod(namespace, manifest)
+        k8s_api_retry(
+            operation=lambda: v1.create_namespaced_pod(namespace, manifest),
+            context=f"creating borg pod {pod_name}",
+            on_conflict=lambda: v1.read_namespaced_pod(pod_name, namespace),
+        )
         _tracked_resources["borg_pods"].append(pod_name)
     except ApiException as exc:
         log_msg(f"❌ Failed to create borg pod {pod_name}: {exc}")

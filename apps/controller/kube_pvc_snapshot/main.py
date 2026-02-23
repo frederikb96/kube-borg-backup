@@ -44,6 +44,7 @@ from kubernetes.client.rest import ApiException
 from kubernetes.config.config_exception import ConfigException
 
 from common.hooks import execute_hooks
+from common.k8s_retry import k8s_api_retry
 
 GROUP = "snapshot.storage.k8s.io"
 VERSION = "v1"
@@ -158,7 +159,15 @@ def create_snapshot(
         },
     }
 
-    api.create_namespaced_custom_object(GROUP, VERSION, namespace, PLURAL, body)
+    k8s_api_retry(
+        operation=lambda: api.create_namespaced_custom_object(
+            GROUP, VERSION, namespace, PLURAL, body
+        ),
+        context=f"creating snapshot {snap_name} for PVC {pvc_name}",
+        on_conflict=lambda: api.get_namespaced_custom_object(
+            GROUP, VERSION, namespace, PLURAL, snap_name
+        ),
+    )
     return snap_name
 
 
