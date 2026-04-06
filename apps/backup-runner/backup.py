@@ -15,6 +15,7 @@ falls back to checking/initializing repository and retries.
 import argparse
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -111,6 +112,47 @@ def rsync_cache_back(cache_local: str, verbose: bool = False) -> None:
         sys.exit(1)
 
 
+def cleanup_stale_cache_locks(cache_dir: str) -> None:
+    """Remove stale local cache locks left by killed borg processes.
+
+    In Kubernetes, each backup-runner pod has a unique hostname. Borg's lock
+    mechanism cannot detect stale locks from different hosts (process_alive()
+    always returns True for cross-host checks), causing borg to enter an
+    infinite sleep-retry loop. Since only one borg process uses a cache at a
+    time (controller ensures sequential execution), any existing local cache
+    locks are guaranteed stale and safe to remove.
+
+    Args:
+        cache_dir: Path to borg cache directory (contains repo hash subdirs)
+    """
+    try:
+        entries = os.listdir(cache_dir)
+    except (OSError, FileNotFoundError):
+        return
+
+    for entry in entries:
+        repo_path = os.path.join(cache_dir, entry)
+        if not os.path.isdir(repo_path):
+            continue
+
+        try:
+            repo_entries = os.listdir(repo_path)
+        except OSError:
+            continue
+
+        for item in repo_entries:
+            if item.startswith('lock.exclusive') or item == 'lock.roster':
+                item_path = os.path.join(repo_path, item)
+                try:
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.unlink(item_path)
+                    logger.info(f"Removed stale cache lock: {item_path}")
+                except OSError as exc:
+                    logger.warning(f"Failed to remove stale cache lock {item_path}: {exc}")
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Borgbackup backup operation")
@@ -194,6 +236,11 @@ def handle_shutdown(signum, frame):
                     logger.info("Lock cleanup complete")
                 except Exception as exc:
                     logger.warning(f"Failed to break lock: {exc}")
+
+    # Clean local cache locks so they don't persist on PVC for next run
+    cleanup_stale_cache_locks('/cache')
+    if _cache_the_cache_enabled and _cache_local_dir:
+        cleanup_stale_cache_locks(_cache_local_dir)
 
     # Rsync cache back if cache-the-cache enabled
     if _cache_the_cache_enabled and _cache_local_dir:
@@ -353,6 +400,8 @@ def run_backup(config: dict) -> int:
         rsync_cache_startup(cache_local)
         cache_dir = cache_local
         logger.info(f"Using ephemeral cache at {cache_dir}")
+
+    cleanup_stale_cache_locks(cache_dir)
 
     # Setup SSH and environment using common functions
     ssh_key_file = setup_ssh_key(config['sshPrivateKey'])

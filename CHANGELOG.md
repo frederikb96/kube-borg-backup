@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.3.1] - 2026-04-06
+
+### Fixed
+- **Stale local cache lock cleanup**: Borg backup-runner pods got permanently stuck when a previous pod was killed (SIGTERM/node migration). Root cause: borg's `process_alive()` always returns True for cross-host lock checks in Kubernetes (different pod hostnames), causing infinite sleep-retry on local cache ExclusiveLock. Fix removes stale local cache locks before borg starts and during graceful shutdown. Remote repository locks are unaffected.
+
+## [6.3.0] - 2026-03-25
+
+### Added
+- **K8s API retry logic**: Exponential backoff retries for transient Kubernetes API errors (etcd timeouts, connection resets) during clone PVC creation and backup runner pod operations
+
 ## [6.2.1] - 2025-12-22
 
 ### Fixed
