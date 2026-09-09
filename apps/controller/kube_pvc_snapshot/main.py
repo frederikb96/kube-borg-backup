@@ -370,7 +370,7 @@ def cleanup_post_hooks():
                 execute_hooks(_api_client, _namespace, transformed_hooks, mode="post")
             except Exception as exc:
                 print(f"❌ Post-hooks failed during cleanup: {exc}", file=sys.stderr)
-    sys.exit(0)
+    sys.exit(143)  # Standard exit code for SIGTERM
 
 
 def log_msg(msg: str) -> None:
@@ -428,6 +428,7 @@ def main() -> None:
         all_post_hooks.extend(post_hooks)
 
     snapshot_failed = False
+    failed_pvcs: set[str] = set()
     background_hook_futures: dict[str, concurrent.futures.Future] = {}
     hook_executor = None
 
@@ -492,6 +493,7 @@ def main() -> None:
                     pvc_name = pvc_cfg.get("name", "unknown")
                     print(f"❌ Failed to create snapshot for {pvc_name}: {exc}", file=sys.stderr)
                     snapshot_failed = True
+                    failed_pvcs.add(pvc_name)
 
         # Step 3: Prune old snapshots
         if retention:
@@ -501,8 +503,14 @@ def main() -> None:
 
             for pvc_cfg in pvcs:
                 pvc_name = pvc_cfg.get("name")
-                if pvc_name:
-                    prune_snapshots_tiered(custom_api, pvc_name, retention, namespace)
+                if not pvc_name:
+                    continue
+                # Retention only ever looks at age, so pruning a PVC whose snapshot just failed
+                # erodes its history one cycle at a time while nothing replaces it.
+                if pvc_name in failed_pvcs:
+                    print(f"⏭️  Skipping prune for {pvc_name}: this cycle's snapshot failed")
+                    continue
+                prune_snapshots_tiered(custom_api, pvc_name, retention, namespace)
 
         # Step 4: Wait for background pre-hooks to complete
         if background_hook_futures:

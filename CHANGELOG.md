@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Archive prefix matching**: A prefix that is itself the prefix of another one no longer selects the other one's archives. CNPG apps configure `<app>-db` and `<app>-db-wal`, so the `<app>-db` prune glob `<app>-db-*` also matched every `<app>-db-wal` archive; the WAL archive is written a minute after the database one, falls in the same retention bucket and wins it, so the database archive was pruned by its own sibling. Live repos held 2-3 database archives against 30-38 WAL ones. The same confusion in the CLI let `backup list` show a sibling's archives and let `backup restore` auto-detect a WAL archive as belonging to the database backup, and so restore it into the database PVC.
 - Archive naming now has one definition, `apps/common/archives.py`, shared by the backup runner, the controller and the CLI. Selecting a prefix's archives anchors on the timestamp instead of accepting any suffix.
+- **Snapshot run interrupted by SIGTERM reported success**: the snapshot controller's signal handler ran the post-hooks and then exited 0, so a run cut short by a node drain, an eviction or a deleted pod completed its Job as successful having created nothing. It now exits 143, matching the borgbackup controller.
+- **Snapshot retention no longer prunes a PVC whose snapshot just failed**: retention only looks at age, so a PVC in a sustained failure would have its history eroded one cycle at a time while nothing new replaced it.
+- **Restore validates before it runs pre-hooks**: both `kbb backup restore` and `kbb snap restore` resolved the target PVC — and, for snapshots, the snapshot itself — only after the pre-hooks had already scaled the application to zero, so a mistyped identifier left the application down. Every identifier is now resolved and verified first.
 
 ## [6.3.1] - 2026-04-06
 

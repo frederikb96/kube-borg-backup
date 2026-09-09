@@ -335,8 +335,8 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
 
     Full workflow:
     1. Load config and restore hooks
-    2. Execute pre-hooks (fail-fast)
-    3. Determine target PVC (explicit or first backup PVC)
+    2. Determine target PVC (explicit or first backup PVC)
+    3. Execute pre-hooks (fail-fast)
     4. Create ephemeral config Secret
     5. Spawn borg-restore pod (waits indefinitely for completion)
     6. Execute post-hooks (ONLY on success! Skip on failure to avoid scaling up broken deployment)
@@ -367,19 +367,7 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
         image_tag = pod_config.get('image', {}).get('tag', 'latest')
         image = f"{image_repository}:{image_tag}"
 
-        # Step 2: Execute pre-hooks (fail-fast)
-        pre_hooks = restore_config.get('preHooks', [])
-        if pre_hooks:
-            print("Executing pre-hooks...")
-            v1, _ = load_kube_client()
-            api_client = v1.api_client
-            result = execute_hooks(api_client, args.namespace, pre_hooks, mode='pre')
-            if not result['success']:
-                print(f"❌ Pre-hooks failed: {result['failed']}", file=sys.stderr)
-                sys.exit(1)
-            print("✅ Pre-hooks completed successfully")
-
-        # Step 3: Determine target PVC
+        # Step 2: Determine and validate the target PVC, before any hook changes cluster state
         if not v1:
             v1, _ = load_kube_client()
 
@@ -419,6 +407,18 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         print(f"Target PVC: {target_pvc}")
+
+        # Step 3: Execute pre-hooks (fail-fast)
+        pre_hooks = restore_config.get('preHooks', [])
+        if pre_hooks:
+            print("Executing pre-hooks...")
+            v1, _ = load_kube_client()
+            api_client = v1.api_client
+            result = execute_hooks(api_client, args.namespace, pre_hooks, mode='pre')
+            if not result['success']:
+                print(f"❌ Pre-hooks failed: {result['failed']}", file=sys.stderr)
+                sys.exit(1)
+            print("✅ Pre-hooks completed successfully")
 
         # Step 4: Create ephemeral config Secret
         secret_name = f"kbb-{args.app}-restore-{int(time.time())}"

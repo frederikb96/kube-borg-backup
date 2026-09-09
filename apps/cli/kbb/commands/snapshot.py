@@ -93,10 +93,10 @@ def restore_snapshot(args: argparse.Namespace) -> None:
 
     Full workflow:
     1. Load config and restore hooks
-    2. Execute pre-hooks (fail-fast)
-    3. Find snapshot and extract source PVC
-    4. Extract storage class from borgbackup config (same as used during backup)
-    5. Determine target PVC (explicit or in-place restore)
+    2. Find snapshot and extract source PVC
+    3. Extract storage class from borgbackup config (same as used during backup)
+    4. Determine target PVC (explicit or in-place restore)
+    5. Execute pre-hooks (fail-fast)
     6. Create clone PVC from snapshot
     7. Spawn rsync pod to copy data (waits indefinitely for completion)
     8. Execute post-hooks (best-effort)
@@ -113,19 +113,7 @@ def restore_snapshot(args: argparse.Namespace) -> None:
         config = find_app_config(args.namespace, args.app, args.release, config_type='snapshot')
         restore_config = config.get('restore', {})
 
-        # Step 2: Execute pre-hooks (fail-fast)
-        pre_hooks = restore_config.get('preHooks', [])
-        if pre_hooks:
-            print("Executing pre-hooks...", flush=True)
-            v1, _ = load_kube_client()
-            api_client = v1.api_client
-            result = execute_hooks(api_client, args.namespace, pre_hooks, mode='pre')
-            if not result['success']:
-                print(f"Pre-hooks failed: {result['failed']}", file=sys.stderr, flush=True)
-                sys.exit(1)
-            print("Pre-hooks completed successfully", flush=True)
-
-        # Step 3: Find snapshot
+        # Step 2: Find snapshot — resolve and validate every identifier before a hook changes cluster state
         v1, custom_api = load_kube_client()
 
         try:
@@ -161,7 +149,7 @@ def restore_snapshot(args: argparse.Namespace) -> None:
 
         print(f"Found snapshot '{args.snapshot_id}' from source PVC '{source_pvc}'", flush=True)
 
-        # Step 4: Extract storage class from borgbackup config
+        # Step 3: Extract storage class from borgbackup config
         # This ensures we use the same storage class that was used during backup clone creation
         try:
             borg_config = find_app_config(args.namespace, args.app, args.release, config_type='borg')
@@ -190,7 +178,7 @@ def restore_snapshot(args: argparse.Namespace) -> None:
             print("Clone PVC will use default storage class", flush=True)
             storage_class = None
 
-        # Step 5: Determine target PVC
+        # Step 4: Determine and verify target PVC
         target_pvc = args.pvc if args.pvc else source_pvc
         print(f"Target PVC: {target_pvc}", flush=True)
 
@@ -207,6 +195,18 @@ def restore_snapshot(args: argparse.Namespace) -> None:
                 sys.exit(1)
             print(f"Error checking PVC: {e}", file=sys.stderr, flush=True)
             sys.exit(1)
+
+        # Step 5: Execute pre-hooks (fail-fast)
+        pre_hooks = restore_config.get('preHooks', [])
+        if pre_hooks:
+            print("Executing pre-hooks...", flush=True)
+            v1, _ = load_kube_client()
+            api_client = v1.api_client
+            result = execute_hooks(api_client, args.namespace, pre_hooks, mode='pre')
+            if not result['success']:
+                print(f"Pre-hooks failed: {result['failed']}", file=sys.stderr, flush=True)
+                sys.exit(1)
+            print("Pre-hooks completed successfully", flush=True)
 
         # Step 6: Create clone PVC
         clone_pvc_name = f"{source_pvc}-restore-{int(time.time())}"
@@ -271,7 +271,7 @@ def restore_snapshot(args: argparse.Namespace) -> None:
         signal.signal(signal.SIGINT, old_sigint)
         signal.signal(signal.SIGHUP, old_sighup)
 
-        # Step 7: Execute post-hooks (best-effort)
+        # Step 8: Execute post-hooks (best-effort)
         post_hooks = restore_config.get('postHooks', [])
         if post_hooks:
             print("Executing post-hooks...", flush=True)
@@ -282,7 +282,7 @@ def restore_snapshot(args: argparse.Namespace) -> None:
             else:
                 print("Post-hooks completed successfully", flush=True)
 
-        # Step 8: Cleanup clone PVC
+        # Step 9: Cleanup clone PVC
         _cleanup_clone_pvc(v1, args.namespace, clone_pvc_name)
 
         print(f"\n✅ Restore complete: snapshot '{args.snapshot_id}' → PVC '{target_pvc}'", flush=True)
