@@ -25,6 +25,7 @@ from datetime import datetime, UTC
 
 import psutil
 
+from archives import archive_glob, archive_name
 from common import load_config, setup_ssh_key, get_borg_env, init_borg_repo
 
 # Configure logging
@@ -415,10 +416,10 @@ def run_backup(config: dict) -> int:
     logger.info(f"PID: {os.getpid()}")
 
     # Build archive name with UTC timestamp
-    archive_name = f"{prefix}-{datetime.now(UTC).strftime('%Y-%m-%d-%H-%M-%S')}"
-    archive = f"{borg_repo}::{archive_name}"
+    name = archive_name(prefix)
+    archive = f"{borg_repo}::{name}"
 
-    logger.info(f"Creating archive: {archive_name}")
+    logger.info(f"Creating archive: {name}")
     logger.info(f"Backup directory: {backup_dir}")
 
     # Build borg create command
@@ -502,7 +503,7 @@ def run_backup(config: dict) -> int:
             logger.error(f"Borg exited with code: {exit_code}")
             return exit_code
 
-        logger.info(f"Backup complete: {archive_name}")
+        logger.info(f"Backup complete: {name}")
 
     except Exception as exc:
         logger.error(f"Backup failed: {exc}")
@@ -527,7 +528,7 @@ def run_backup(config: dict) -> int:
         if retention.get('yearly'):
             prune_cmd.extend(['--keep-yearly', str(retention['yearly'])])
 
-        prune_cmd.extend(['--glob-archives', f'{prefix}-*', borg_repo])
+        prune_cmd.extend(['--glob-archives', archive_glob(prefix), borg_repo])
 
         try:
             result = subprocess.run(

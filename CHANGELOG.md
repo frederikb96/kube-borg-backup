@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.3.2] - 2026-09-09
+
+### Fixed
+- **Archive prefix matching**: A prefix that is itself the prefix of another one no longer selects the other one's archives. CNPG apps configure `<app>-db` and `<app>-db-wal`, so the `<app>-db` prune glob `<app>-db-*` also matched every `<app>-db-wal` archive; the WAL archive is written a minute after the database one, falls in the same retention bucket and wins it, so the database archive was pruned by its own sibling. Live repos held 2-3 database archives against 30-38 WAL ones. The same confusion in the CLI let `backup list` show a sibling's archives and let `backup restore` auto-detect a WAL archive as belonging to the database backup, and so restore it into the database PVC.
+- Archive naming now has one definition, `apps/common/archives.py`, shared by the backup runner, the controller and the CLI. Selecting a prefix's archives anchors on the timestamp instead of accepting any suffix.
+
 ## [6.3.1] - 2026-04-06
 
 ### Fixed

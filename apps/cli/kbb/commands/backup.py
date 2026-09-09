@@ -10,6 +10,7 @@ import yaml
 from kubernetes import client
 from kubernetes.client.exceptions import ApiException
 
+from common.archives import archive_matches
 from common.pod_monitor import PodMonitor
 from kbb.utils import find_app_config, load_kube_client
 
@@ -216,7 +217,7 @@ def list_borg_archives(args: argparse.Namespace) -> None:
         # Filter archives that match any of the configured prefixes
         archives = [
             a for a in all_archives
-            if any(a.get('name', '').startswith(f"{prefix}-") for prefix in archive_prefixes)
+            if any(archive_matches(a.get('name', ''), prefix) for prefix in archive_prefixes)
         ]
 
         print(f"\nBorg archives for {args.app} ({len(archives)} found):")
@@ -385,18 +386,16 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
         if args.pvc:
             target_pvc = args.pvc
         else:
-            # Auto-detect from archive name
-            # Archive format: {prefix}-YYYY-MM-DD-HH-MM-SS
-            # Check if archive starts with any backup name from config
+            # Auto-detect from archive name, which is {prefix}-YYYY-MM-DD-HH-MM-SS
             backups = config.get('backups', [])
             if not backups:
                 print("Error: No backups configured in config", file=sys.stderr)
                 sys.exit(1)
 
-            # Find matching backup: archive must start with "{backup_name}-"
+            # Find the backup whose name is this archive's own prefix, not merely a prefix of it
             matching_backups = [
                 b for b in backups
-                if args.archive_id.startswith(b.get('name', '') + '-')
+                if archive_matches(args.archive_id, b.get('name', ''))
             ]
 
             if not matching_backups:

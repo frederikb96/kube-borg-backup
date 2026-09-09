@@ -9,6 +9,9 @@ RUN apk add --no-cache openssh-client rsync fuse fuse3 fuse3-dev gcc musl-dev li
 
 WORKDIR /app
 
+# Shared archive-naming contract, also used by the controller and the CLI
+COPY common/archives.py /app/archives.py
+
 # Copy backup-runner Python modules
 COPY backup-runner/common.py /app/common.py
 COPY backup-runner/backup.py /app/backup.py
