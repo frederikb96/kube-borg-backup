@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.4.1] - 2026-09-10
+
+### Fixed
+- **Snapshots failing with `'NoneType' object has no attribute 'decode'`**: an exec hook shared its `ApiClient` with the rest of the controller, and the Kubernetes client's `stream()` swaps that client's request method for a websocket one while it connects. Any API call another thread made in that window got a websocket response it could not deserialize. Since 6.4.0 every snapshot worker lists pods right as it starts, which coincides with a background (`wait: false`) pre-hook connecting, so apps using one lost a share of their snapshot runs. Exec hooks now connect through a private client.
+
 ## [6.4.0] - 2026-09-10
 
 ### Added

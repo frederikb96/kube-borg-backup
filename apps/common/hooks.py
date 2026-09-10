@@ -152,9 +152,6 @@ def execute_exec_hook(
             f"Resource string: '{resource_string}'"
         )
 
-    # Create CoreV1Api instance
-    v1 = client.CoreV1Api(api_client)
-
     # Build exec parameters
     exec_kwargs: dict[str, Any] = {
         'name': pod_name,
@@ -171,31 +168,36 @@ def execute_exec_hook(
     if container:
         exec_kwargs['container'] = container
 
-    # Execute command via stream API
-    try:
-        resp = stream(
-            v1.connect_get_namespaced_pod_exec,
-            **exec_kwargs
-        )
-    except Exception as e:
-        raise Exception(
-            f"Failed to execute command in pod '{pod_name}' in namespace '{namespace}': {e}"
-        ) from e
+    # stream() replaces the client's request method with a websocket one while it
+    # connects, so another thread calling the API through the same client at that
+    # moment gets a response it cannot deserialize. A private client keeps the swap
+    # away from concurrent callers such as background hooks and parallel snapshots.
+    with client.ApiClient(api_client.configuration) as exec_client:
+        v1 = client.CoreV1Api(exec_client)
 
-    # Read output
-    stdout_output = ''
-    stderr_output = ''
+        # Execute command via stream API
+        try:
+            resp = stream(
+                v1.connect_get_namespaced_pod_exec,
+                **exec_kwargs
+            )
+        except Exception as e:
+            raise Exception(
+                f"Failed to execute command in pod '{pod_name}' in namespace '{namespace}': {e}"
+            ) from e
 
-    # Read all available output
-    while resp.is_open():
-        resp.update(timeout=1)
-        if resp.peek_stdout():
-            stdout_output += resp.read_stdout()
-        if resp.peek_stderr():
-            stderr_output += resp.read_stderr()
+        # Read all available output
+        stdout_output = ''
+        stderr_output = ''
+        while resp.is_open():
+            resp.update(timeout=1)
+            if resp.peek_stdout():
+                stdout_output += resp.read_stdout()
+            if resp.peek_stderr():
+                stderr_output += resp.read_stderr()
 
-    # Get exit code
-    exit_code = resp.returncode
+        # Get exit code
+        exit_code = resp.returncode
 
     # Check exit code
     if exit_code != 0:
