@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.4.0] - 2026-09-10
+
+### Added
+- **Refuse to snapshot a volume whose workload is down**: a PVC mounted by a pod that has been Running but not Ready for longer than `snapshot.unreadyConsumerGraceSeconds` (default 900) is not snapshotted, and the run fails. A CNPG instance that dropped out of replication keeps its pod Running and its volume intact, so without this every hourly snapshot and borg archive silently captured the moment it died while the jobs reported success. Retention keeps the last good snapshots in the meantime, and the borgbackup run keeps archiving the newest ready one.
+
 ## [6.3.2] - 2026-09-09
 
 ### Fixed

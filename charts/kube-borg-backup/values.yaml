@@ -39,6 +39,13 @@ snapshot:
 
   timeout: 600  # 10 minutes
 
+  # A PVC whose mounting pod has been Running but not Ready for longer than
+  # this is not snapshotted, and the run fails. A workload that stopped
+  # updating its volume (a database replica that dropped out of replication)
+  # would otherwise keep producing fresh-looking snapshots and backups of stale
+  # data. Retention keeps the last good snapshots meanwhile.
+  unreadyConsumerGraceSeconds: 900
+
   # Tiered retention: keeps 1 snapshot per time bucket
   retention:
     hourly: 24

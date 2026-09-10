@@ -5,6 +5,7 @@ following structure::
 
     snapshots:
       schedule: "0 */4 * * *"
+      unreadyConsumerGraceSeconds: 900
       retention:
         hourly: 24
         daily: 7
@@ -197,17 +198,61 @@ def wait_snapshot_ready(
     raise TimeoutError(f"Snapshot {name} not ready after {timeout}s")
 
 
+def unready_consumers(
+    core_api: client.CoreV1Api,
+    pvc_name: str,
+    namespace: str,
+    grace_seconds: int
+) -> list[str]:
+    """Return the pods mounting a PVC that have been Running but not Ready for longer than the grace."""
+    pods = k8s_api_retry(
+        operation=lambda: core_api.list_namespaced_pod(namespace),
+        context=f"listing pods that mount PVC {pvc_name}",
+    )
+    now = datetime.now(UTC)
+    stale: list[str] = []
+    for pod in pods.items:
+        if pod.metadata.deletion_timestamp or pod.status.phase != "Running":
+            continue
+        claims = {
+            vol.persistent_volume_claim.claim_name
+            for vol in (pod.spec.volumes or [])
+            if vol.persistent_volume_claim
+        }
+        if pvc_name not in claims:
+            continue
+        for cond in pod.status.conditions or []:
+            if cond.type != "Ready" or cond.status == "True" or not cond.last_transition_time:
+                continue
+            unready_for = (now - cond.last_transition_time).total_seconds()
+            if unready_for > grace_seconds:
+                stale.append(f"{pod.metadata.name} (not Ready for {int(unready_for // 60)}m)")
+    return stale
+
+
 def create_snapshot_for_pvc(
     api: client.CustomObjectsApi,
+    core_api: client.CoreV1Api,
     pvc_config: dict[str, Any],
-    namespace: str
+    namespace: str,
+    grace_seconds: int
 ) -> str:
-    """Create and wait for snapshot for a single PVC."""
+    """Create and wait for snapshot for a single PVC.
+
+    Raises:
+        RuntimeError: If a pod mounting the PVC has been unready past the grace, since its
+            volume is no longer being kept current and a snapshot would pass stale data off
+            as fresh.
+    """
     pvc_name = pvc_config.get("name")
     snapshot_class = pvc_config.get("snapshotClass")
 
     if not pvc_name or not snapshot_class:
         raise ValueError(f"PVC config missing name or snapshotClass: {pvc_config}")
+
+    stale = unready_consumers(core_api, pvc_name, namespace, grace_seconds)
+    if stale:
+        raise RuntimeError(f"refusing to snapshot {pvc_name}: mounted by {', '.join(stale)}")
 
     print(f"📸 Creating snapshot for PVC: {pvc_name}")
     snap_name = create_snapshot(api, pvc_name, snapshot_class, namespace)
@@ -398,6 +443,7 @@ def main() -> None:
     test_mode = args.test
 
     custom_api, api_client = init_clients()
+    core_api = client.CoreV1Api(api_client)
     _api_client = api_client
 
     log_msg(f"🔧 Using namespace: {namespace}")
@@ -410,6 +456,10 @@ def main() -> None:
     snapshot_config = cfg.get("snapshots", {})
     pvcs = snapshot_config.get("pvcs", [])
     retention = snapshot_config.get("retention", {})
+    grace_seconds = snapshot_config.get("unreadyConsumerGraceSeconds")
+    if not isinstance(grace_seconds, int) or grace_seconds <= 0:
+        log_msg("❌ Config field snapshots.unreadyConsumerGraceSeconds must be a positive integer")
+        sys.exit(2)
 
     if not pvcs:
         print("⚠️  No PVCs configured for snapshot", file=sys.stderr)
@@ -481,7 +531,9 @@ def main() -> None:
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(pvcs)) as executor:
             futures = {
-                executor.submit(create_snapshot_for_pvc, custom_api, pvc_cfg, namespace): pvc_cfg
+                executor.submit(
+                    create_snapshot_for_pvc, custom_api, core_api, pvc_cfg, namespace, grace_seconds
+                ): pvc_cfg
                 for pvc_cfg in pvcs
             }
 

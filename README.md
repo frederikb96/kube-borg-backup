@@ -165,7 +165,7 @@ All configuration is done via Helm values. See the following files for detailed 
 
 ## How It Works
 
-1. **Snapshot Controller** runs as CronJob and creates `VolumeSnapshot` resources for configured PVCs
+1. **Snapshot Controller** runs as CronJob and creates `VolumeSnapshot` resources for configured PVCs, refusing (and failing the run) for a PVC whose mounting pod has been unready past `unreadyConsumerGraceSeconds`
 2. **Pre-hooks** execute sequentially before snapshots (e.g., `pg_backup_start()` to pause PostgreSQL writes)
 3. **Snapshots** are created in parallel via CSI driver for instant point-in-time capture
 4. **Post-hooks** execute sequentially after snapshots (e.g., `pg_backup_stop()` to resume writes)
