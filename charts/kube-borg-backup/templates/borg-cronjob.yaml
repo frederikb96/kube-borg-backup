@@ -29,6 +29,8 @@ spec:
               image: "{{ $borgConfig.image.repository }}:{{ $borgConfig.image.tag }}"
               imagePullPolicy: {{ $borgConfig.image.pullPolicy }}
               command: ["python", "-m", "kube_snapshot_borgbackup.main"]
+              resources:
+                {{- toYaml $borgConfig.resources | nindent 16 }}
               volumeMounts:
                 - name: config
                   mountPath: /config

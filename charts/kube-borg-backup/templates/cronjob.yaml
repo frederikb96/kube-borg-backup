@@ -29,6 +29,8 @@ spec:
               image: "{{ $snapshotConfig.image.repository }}:{{ $snapshotConfig.image.tag }}"
               imagePullPolicy: {{ $snapshotConfig.image.pullPolicy }}
               command: ["python", "-m", "kube_pvc_snapshot.main"]
+              resources:
+                {{- toYaml $snapshotConfig.resources | nindent 16 }}
               volumeMounts:
                 - name: config
                   mountPath: /config

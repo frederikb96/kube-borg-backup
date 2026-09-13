@@ -24,6 +24,14 @@ snapshot:
     tag: latest
     pullPolicy: Always
 
+  # Requests for the controller container itself (not the rsync/borg pods it
+  # spawns, see pod.resources below). No limit: it's a short-lived process
+  # that mostly waits on the Kubernetes API, so nothing to cap it against.
+  resources:
+    requests:
+      cpu: "5m"
+      memory: "64Mi"
+
   # Image for rsync pods during snapshot restore
   pod:
     image:
@@ -61,6 +69,14 @@ borgbackup:
     repository: ghcr.io/frederikb96/kube-borg-backup/controller
     tag: latest
     pullPolicy: Always
+
+  # Requests for the controller container itself (not the borg backup pods it
+  # spawns, see pod.resources below). No limit: it's a short-lived process
+  # that mostly waits on the Kubernetes API, so nothing to cap it against.
+  resources:
+    requests:
+      cpu: "5m"
+      memory: "64Mi"
 
   cron:
     schedule: "30 */6 * * *"  # Every 6 hours at :30
