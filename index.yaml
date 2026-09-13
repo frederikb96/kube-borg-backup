@@ -2,6 +2,30 @@ apiVersion: v1
 entries:
   kube-borg-backup:
   - apiVersion: v2
+    appVersion: 6.4.2
+    created: "2026-09-13T06:40:46.423747821Z"
+    description: Kubernetes PVC snapshot and BorgBackup automation tool
+    digest: 970577de3eba7855c63ee619c4253ede2b082bfb9ee16592068e65ff01c652c7
+    home: https://github.com/frederikb96/kube-borg-backup
+    keywords:
+    - pvc
+    - snapshot
+    - csi
+    - borgbackup
+    - backup
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    maintainers:
+    - name: Frederik Berg
+      url: https://frederikberg.com
+    name: kube-borg-backup
+    sources:
+    - https://github.com/frederikb96/kube-borg-backup
+    type: application
+    urls:
+    - https://github.com/frederikb96/kube-borg-backup/releases/download/v6.4.2/kube-borg-backup-6.4.2.tgz
+    version: 6.4.2
+  - apiVersion: v2
     appVersion: 6.4.1
     created: "2026-09-10T13:36:54.011530807Z"
     description: Kubernetes PVC snapshot and BorgBackup automation tool
@@ -794,4 +818,4 @@ entries:
     urls:
     - https://github.com/frederikb96/pvc-csi-snapshot-borgbackup-helm/releases/download/helm-chart-snapshot-borgbackup-0.1.0/snapshot-borgbackup-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-10T13:36:54.011838284Z"
+generated: "2026-09-13T06:40:46.42408179Z"
