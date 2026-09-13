@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.4.2] - 2026-09-13
+
 ### Added
 - **Controller resource requests**: `snapshot.resources` and `borgbackup.resources` (default `cpu: 5m`, `memory: 64Mi`, no limit) set requests on the snapshot and borgbackup CronJob controller containers themselves, overridable per app. Without them the controller pods ran BestEffort, giving them the lowest scheduling priority and making them the first candidates for eviction on a busy node.
 
