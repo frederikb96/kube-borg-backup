@@ -54,7 +54,7 @@ apps:
         pvcName: test-borg-cache
         storageClassName: local-path
         size: 2Gi
-        cacheTheCache: false  # Copy cache to ephemeral local storage for faster access
+        cacheTheCache: false  # Keep off, see chart values.yaml
         accessModes:
           - ReadWriteOncePod
       pvcs:
