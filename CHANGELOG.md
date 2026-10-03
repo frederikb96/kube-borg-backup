@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.5.0] - 2026-10-03
+
+### Fixed
+- **Clone PVCs, config secrets and borg pods leaking on ordinary failures**: a backup whose clone PVC did not become ready returned before the cleanup block was entered, leaving the clone (and the ZFS snapshot it pins) behind. The whole run after clone creation now sits inside the cleanup, and a final pass at the end of the controller deletes anything still tracked.
+- **Cleanup failures were silent**: deleting a pod, PVC or secret ignored every API error, so one blip leaked the object invisibly. Deletes now retry transient errors, treat "not found" as done, and log what they could not remove. Clone PVCs, secrets and pods are tracked before the create call, so an object whose create response was lost is still cleaned up.
+- **A single Warning event aborted a backup**: a clone PVC was declared failed on the first Warning event mentioning "failed", "error" or similar, and on any API error while polling, although the provisioner keeps retrying on its own. The backup was abandoned and the clone ended up bound and unused. Warnings are logged and waited out; only a missing PVC or the bind timeout fails the wait, and the timeout message carries the last Warning.
+- **API error while polling a running borg pod**: an error reading the pod status ended the poll as a failure, and the cleanup then deleted the still-running pod mid-backup. The poll now retries until the pod finishes or its deadline passes.
+- **Failed background pre-hook kept its snapshots**: a `wait: false` pre-hook that failed was only noticed after the snapshots were taken and pruned, so snapshots taken without the lock or backup mode stayed in the chain as good restore points. A failed background hook now discards that cycle's snapshots and skips pruning.
+
+### Added
+- **Ownership and sweep for ephemeral objects**: clone PVCs, config secrets and borg pods carry an `ephemeral: "true"` label and an ownerReference to the controller's Job, so deleting the Job garbage-collects what a killed controller (SIGKILL, node loss) left behind. Each run also starts by deleting leftovers of earlier runs of the same app: clone PVCs, config secrets and borg pods older than the app's total backup time (sum of `timeout` and `cloneBindTimeout` over its backups) that no running pod uses, logging how many it found.
+- **Start gate for background pre-hooks**: `startedMarker` and `startedTimeoutSeconds` on a `wait: false` exec hook make the snapshots wait until the hook prints the marker on stdout. A hook that fails, ends without the marker or stays silent past the timeout aborts the run before any snapshot. Hooks without a marker behave as before.
+- Unit tests (`apps/tests`, run with `pytest`) for cleanup on every exit path, sweep selection, ownerReference construction, pod and PVC polling, and the hook start gate.
+
+### Changed
+- Config secrets are created from a plain manifest instead of a `V1Secret` model; content is unchanged.
+- Corrected the restore code's description of the `data/` top-level directory: every archive the backup runner writes has it, it is not a legacy format. Behaviour is unchanged.
+
 ## [6.4.2] - 2026-09-13
 
 ### Added
