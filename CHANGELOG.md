@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unit tests (`apps/tests`, run with `pytest`) for cleanup on every exit path, sweep selection, ownerReference construction, pod and PVC polling, and the hook start gate.
 
 ### Changed
+- The release pipeline runs the unit tests as a gate: the chart and both images are only published when they pass.
 - Config secrets are created from a plain manifest instead of a `V1Secret` model; content is unchanged.
 - Corrected the restore code's description of the `data/` top-level directory: every archive the backup runner writes has it, it is not a legacy format. Behaviour is unchanged.
 
