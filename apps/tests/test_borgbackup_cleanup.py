@@ -6,6 +6,7 @@ from collections import deque
 from typing import Any
 
 import pytest
+from kubernetes import client
 from kubernetes.client.rest import ApiException
 
 from kube_snapshot_borgbackup import main as bb
@@ -39,7 +40,7 @@ def run_backup(core: Any, clone: bb.ClonePVC) -> bool:
 
 
 def track_clone(core: Any, name: str) -> None:
-    core.pvcs[name] = {"metadata": {"name": name}}
+    core.pvcs[name] = client.V1PersistentVolumeClaim(metadata=client.V1ObjectMeta(name=name))
     bb._tracked_resources["clone_pvcs"].append(name)
 
 
@@ -160,8 +161,6 @@ def test_clone_tracked_even_when_create_never_returns(core: Any, monkeypatch: py
 
 
 def warning_event(message: str) -> Any:
-    from kubernetes import client
-
     return client.CoreV1Event(
         metadata=client.V1ObjectMeta(name="e"),
         involved_object=client.V1ObjectReference(),
@@ -234,3 +233,46 @@ def test_pod_poll_still_fails_on_failed_phase(core: Any, monkeypatch: pytest.Mon
     core.pod_phases["p1"] = deque(["Running", "Failed"])
 
     assert bb.spawn_borg_pod(core, pod_manifest(), NS, timeout=600) is False
+
+
+# -- exit status of a whole run ----------------------------------------------------------
+
+
+def run_main(core: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, run_backups: Any) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "namespace: app\nborgRepo: r\nborgPassphrase: p\nsshPrivateKey: k\n"
+        "backups:\n  - {name: data, pvc: data, class: sc, timeout: 60}\n"
+    )
+    monkeypatch.setattr(bb.sys, "argv", ["prog", "-c", str(config)])
+    monkeypatch.setattr(bb.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(bb, "init_clients", lambda: (core, None, None))
+    monkeypatch.setattr(bb, "run_backups", run_backups)
+    bb.main()
+
+
+def test_failed_backup_makes_the_run_exit_nonzero(core: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        run_main(core, tmp_path, monkeypatch, lambda *a, **k: bb._failures.append("data: boom"))
+
+    assert exit_info.value.code == 1
+
+
+def test_successful_run_cleans_up(core: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    track_clone(core, "left-over")
+
+    run_main(core, tmp_path, monkeypatch, lambda *a, **k: None)
+
+    assert "left-over" not in core.pvcs
+
+
+def test_unexpected_error_still_cleans_up(core: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    track_clone(core, "left-over")
+
+    def explode(*_: Any, **__: Any) -> None:
+        raise RuntimeError("unexpected")
+
+    with pytest.raises(RuntimeError):
+        run_main(core, tmp_path, monkeypatch, explode)
+
+    assert "left-over" not in core.pvcs

@@ -1416,6 +1416,19 @@ def main() -> None:
         # Whatever an unexpected error left tracked goes now
         delete_tracked_resources(v1, namespace)
 
+    # Report results
+    log_msg(f"\n{'='*60}")
+    log_msg("📊 Backup Process Complete")
+    log_msg(f"{'='*60}")
+
+    if _failures:
+        log_msg(f"\n❌ {len(_failures)} backup(s) failed:")
+        for failure in _failures:
+            log_msg(f"  - {failure}")
+        log_msg("\n❌ Backup process completed with errors")
+        sys.exit(1)
+
+    log_msg("\n✅ All backups completed successfully!")
 
 
 def run_backups(
