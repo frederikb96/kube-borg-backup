@@ -148,9 +148,9 @@ def run_rsync(source: Path, target: Path) -> int:
 
     Uses rsync with --delete to ensure target matches source exactly.
 
-    Handles archives with data/ prefix (legacy backup format where /data was backed up
-    as a directory, not its contents). If archive has single top-level 'data' directory,
-    strips it automatically to restore contents directly to target root.
+    The backup runner archives the directory /data itself, so borg stores its contents under a
+    single top-level 'data' directory. If the mounted archive has exactly that one top-level
+    'data' directory, it is stripped to restore the contents directly to the target root.
 
     Args:
         source: Source directory (mounted archive)
@@ -164,9 +164,9 @@ def run_rsync(source: Path, target: Path) -> int:
     """
     global _rsync_process
 
-    # Detect if archive has single top-level 'data' directory (legacy format)
-    # This happens when backup was created with `borg create repo::archive /data`
-    # instead of `cd /data && borg create repo::archive .`
+    # Archives made by the backup runner (`borg create repo::archive /data`) hold their files
+    # under a single top-level 'data' directory; an archive created from inside the directory
+    # (`cd /data && borg create repo::archive .`) would not, and is restored as is.
     data_dir = source / "data"
     if data_dir.is_dir():
         # Check if this is the ONLY item in the mount (exclude special borg files)
