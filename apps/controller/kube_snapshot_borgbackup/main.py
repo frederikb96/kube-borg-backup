@@ -20,12 +20,14 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
 
+import urllib3
 import yaml
 from kubernetes import client, config as k8s_config
 from kubernetes.client.rest import ApiException
@@ -44,6 +46,13 @@ _namespace: str | None = None
 _core_api: client.CoreV1Api | None = None
 _storage_api: client.StorageV1Api | None = None
 _failures: list[str] = []
+# Job that owns this controller pod; set on every clone PVC, config secret and borg pod so
+# deleting the Job garbage-collects whatever a killed controller left behind.
+_owner_references: list[dict[str, Any]] = []
+
+MANAGED_LABELS = {"app": "kube-borg-backup", "managed-by": "kube-borg-backup"}
+CLONE_MARKER = "-clone-"
+DEFAULT_CLONE_BIND_TIMEOUT = 300
 
 
 @dataclass
@@ -118,33 +127,29 @@ def cleanup_all_resources() -> None:
         return
 
     log_msg("\n\n🛑 Received SIGTERM - cleaning up all tracked resources...")
-
-    # Clean up config secrets
-    for secret_name in _tracked_resources["ssh_secrets"]:
-        try:
-            log_msg(f"🗑️  Deleting config secret: {secret_name}")
-            _core_api.delete_namespaced_secret(secret_name, _namespace)
-        except ApiException as exc:
-            log_msg(f"⚠️  Failed to delete secret {secret_name}: {exc}")
-
-    # Clean up borg pods
-    for pod_name in _tracked_resources["borg_pods"]:
-        try:
-            log_msg(f"🗑️  Deleting borg pod: {pod_name}")
-            _core_api.delete_namespaced_pod(pod_name, _namespace)
-        except ApiException as exc:
-            log_msg(f"⚠️  Failed to delete pod {pod_name}: {exc}")
-
-    # Clean up clone PVCs
-    for pvc_name in _tracked_resources["clone_pvcs"]:
-        try:
-            log_msg(f"🗑️  Deleting clone PVC: {pvc_name}")
-            _core_api.delete_namespaced_persistent_volume_claim(pvc_name, _namespace)
-        except ApiException as exc:
-            log_msg(f"⚠️  Failed to delete PVC {pvc_name}: {exc}")
-
-    log_msg("✅ Cleanup complete")
+    delete_tracked_resources(_core_api, _namespace)
     sys.exit(143)  # Standard exit code for SIGTERM
+
+
+def delete_tracked_resources(v1: client.CoreV1Api, namespace: str) -> None:
+    """Delete every tracked secret, pod and clone PVC (in that order), logging what could not go."""
+    for secret_name in list(_tracked_resources["ssh_secrets"]):
+        log_msg(f"🗑️  Deleting config secret: {secret_name}")
+        delete_secret(v1, secret_name, namespace)
+
+    for pod_name in list(_tracked_resources["borg_pods"]):
+        log_msg(f"🗑️  Deleting borg pod: {pod_name}")
+        delete_pod(v1, pod_name, namespace)
+
+    for pvc_name in list(_tracked_resources["clone_pvcs"]):
+        log_msg(f"🗑️  Deleting clone PVC: {pvc_name}")
+        delete_pvc(v1, pvc_name, namespace)
+
+    leftovers = {kind: names for kind, names in _tracked_resources.items() if names}
+    if leftovers:
+        log_msg(f"⚠️  Cleanup incomplete, still present: {leftovers}")
+    else:
+        log_msg("✅ Cleanup complete")
 
 
 def validate_storage_class(storage_api: client.StorageV1Api, storage_class: str) -> tuple[bool, str]:
@@ -292,6 +297,50 @@ def latest_snapshot(
         return None
 
 
+def resolve_owner_references(v1: client.CoreV1Api, namespace: str, pod_name: str | None) -> list[dict[str, Any]]:
+    """Build the ownerReferences that tie ephemeral objects to this controller's Job.
+
+    The controller pod's own ownerReferences name its Job (and carry the uid), so only
+    `get pods` is needed. blockOwnerDeletion stays false: setting it would require the
+    controller to be allowed to update `jobs/finalizers` on clusters that enforce that.
+
+    Returns an empty list when the controller is not running as a Job's pod or the lookup
+    fails; the start-of-run sweep still reclaims leftovers in that case.
+    """
+    if not pod_name:
+        log_msg("⚠️  No pod name known (HOSTNAME unset) - ephemeral objects will not be owned by a Job")
+        return []
+    try:
+        pod = v1.read_namespaced_pod(pod_name, namespace)
+    except (ApiException, urllib3.exceptions.HTTPError, OSError) as exc:
+        log_msg(f"⚠️  Could not read own pod {pod_name} to find its Job: {exc}")
+        return []
+    for owner in pod.metadata.owner_references or []:
+        if owner.kind == "Job":
+            return [{
+                "apiVersion": owner.api_version,
+                "kind": owner.kind,
+                "name": owner.name,
+                "uid": owner.uid,
+                "blockOwnerDeletion": False,
+                "controller": False,
+            }]
+    log_msg(f"⚠️  Pod {pod_name} has no Job owner - ephemeral objects will not be owned by a Job")
+    return []
+
+
+def ephemeral_metadata(name: str, namespace: str, extra_labels: dict[str, str] | None = None) -> dict[str, Any]:
+    """Metadata shared by every object a backup run creates and later deletes."""
+    metadata: dict[str, Any] = {
+        "name": name,
+        "namespace": namespace,
+        "labels": {**MANAGED_LABELS, **(extra_labels or {}), "ephemeral": "true"},
+    }
+    if _owner_references:
+        metadata["ownerReferences"] = [dict(ref) for ref in _owner_references]
+    return metadata
+
+
 def create_clone_pvc(
     v1: client.CoreV1Api,
     snap_api: client.CustomObjectsApi,
@@ -319,14 +368,7 @@ def create_clone_pvc(
     body = {
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
-        "metadata": {
-            "name": clone_name,
-            "namespace": namespace,
-            "labels": {
-                "app": "kube-borg-backup",
-                "managed-by": "kube-borg-backup"
-            }
-        },
+        "metadata": ephemeral_metadata(clone_name, namespace),
         "spec": {
             "accessModes": ["ReadWriteOncePod"],
             "storageClassName": storage_class,
@@ -339,12 +381,13 @@ def create_clone_pvc(
         },
     }
 
+    # Tracked before the create: a create whose response is lost can still have succeeded.
+    _tracked_resources["clone_pvcs"].append(clone_name)
     k8s_api_retry(
         operation=lambda: v1.create_namespaced_persistent_volume_claim(namespace, body),
         context=f"creating clone PVC {clone_name}",
         on_conflict=lambda: v1.read_namespaced_persistent_volume_claim(clone_name, namespace),
     )
-    _tracked_resources["clone_pvcs"].append(clone_name)
 
 
 def create_borg_secret(
@@ -399,28 +442,21 @@ def create_borg_secret(
     # Serialize to YAML
     config_yaml = yaml.dump(config, default_flow_style=False, sort_keys=False)
 
-    body = client.V1Secret(
-        metadata=client.V1ObjectMeta(
-            name=secret_name,
-            namespace=namespace,
-            labels={
-                "app": "kube-borg-backup",
-                "managed-by": "kube-borg-backup",
-                "ephemeral": "true"
-            }
-        ),
-        type="Opaque",
-        string_data={
-            "config.yaml": config_yaml
-        }
-    )
+    body = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": ephemeral_metadata(secret_name, namespace),
+        "type": "Opaque",
+        "stringData": {"config.yaml": config_yaml},
+    }
 
+    # Tracked before the create: a create whose response is lost can still have succeeded.
+    _tracked_resources["ssh_secrets"].append(secret_name)
     k8s_api_retry(
         operation=lambda: v1.create_namespaced_secret(namespace, body),
         context=f"creating config secret {secret_name}",
         on_conflict=lambda: v1.read_namespaced_secret(secret_name, namespace),
     )
-    _tracked_resources["ssh_secrets"].append(secret_name)
 
 
 def wait_clone_pvc_ready(
@@ -435,6 +471,10 @@ def wait_clone_pvc_ready(
     For WaitForFirstConsumer, the PVC won't bind until a pod uses it.
     For Longhorn volumes, additionally waits for workload readiness.
 
+    Warning events and API errors are transient while a volume provisions (the provisioner
+    retries on its own), so they are logged and waited out; only a missing PVC or the
+    timeout fails the wait, and the timeout reports the last Warning event.
+
     Args:
         v1: CoreV1Api client
         pvc_name: Name of PVC to wait for
@@ -446,6 +486,7 @@ def wait_clone_pvc_ready(
     """
     start_time = time.time()
     last_event_check = 0.0
+    reported_warnings: set[str] = set()
 
     while True:
         elapsed = int(time.time() - start_time)
@@ -501,10 +542,10 @@ def wait_clone_pvc_ready(
                 current_time = time.time()
                 if current_time - last_event_check >= 10:
                     last_event_check = current_time
-                    error_msg = _check_pvc_events_for_errors(v1, pvc_name, namespace)
-                    if error_msg:
-                        log_msg(f"❌ PVC {pvc_name} provisioning failed: {error_msg}")
-                        return False, error_msg
+                    warning = _check_pvc_events_for_errors(v1, pvc_name, namespace)
+                    if warning and warning not in reported_warnings:
+                        reported_warnings.add(warning)
+                        log_msg(f"⚠️  PVC {pvc_name} provisioning warning (still waiting): {warning}")
 
                     # Check if WaitForFirstConsumer
                     events = v1.list_namespaced_event(
@@ -516,9 +557,11 @@ def wait_clone_pvc_ready(
                             log_msg(f"🕓 PVC {pvc_name} waiting for first consumer after {elapsed}s - ready to use")
                             return True, ""
 
-        except ApiException as exc:
-            log_msg(f"⚠️ Error checking PVC {pvc_name}: {exc}")
-            return False, str(exc)
+        except (ApiException, urllib3.exceptions.HTTPError, OSError) as exc:
+            if isinstance(exc, ApiException) and exc.status == 404:
+                log_msg(f"❌ PVC {pvc_name} does not exist: {exc}")
+                return False, str(exc)
+            log_msg(f"⚠️ Error checking PVC {pvc_name} (will retry): {exc}")
 
         time.sleep(5)
 
@@ -593,15 +636,7 @@ def build_borg_pod_manifest(
     manifest = {
         "apiVersion": "v1",
         "kind": "Pod",
-        "metadata": {
-            "name": pod_name,
-            "namespace": namespace,
-            "labels": {
-                "app": "kube-borg-backup",
-                "backup": backup_name,
-                "managed-by": "kube-borg-backup"
-            }
-        },
+        "metadata": ephemeral_metadata(pod_name, namespace, {"backup": backup_name}),
         "spec": {
             "activeDeadlineSeconds": pvc_timeout,
             "restartPolicy": "Never",
@@ -681,13 +716,14 @@ def spawn_borg_pod(
     """
     pod_name = manifest["metadata"]["name"]
 
+    # Tracked before the create: a create whose response is lost can still have succeeded.
+    _tracked_resources["borg_pods"].append(pod_name)
     try:
         k8s_api_retry(
             operation=lambda: v1.create_namespaced_pod(namespace, manifest),
             context=f"creating borg pod {pod_name}",
             on_conflict=lambda: v1.read_namespaced_pod(pod_name, namespace),
         )
-        _tracked_resources["borg_pods"].append(pod_name)
     except ApiException as exc:
         log_msg(f"❌ Failed to create borg pod {pod_name}: {exc}")
         return False
@@ -716,10 +752,10 @@ def spawn_borg_pod(
                     log_msg(f"❌ Borg pod {pod_name} failed")
                     return False
 
-        except ApiException as exc:
-            log_msg(f"⚠️  Error reading pod {pod_name}: {exc}")
-            monitor.stop()
-            return False
+        except (ApiException, urllib3.exceptions.HTTPError, OSError) as exc:
+            # The pod keeps running whatever the API says; giving up here would have the
+            # caller delete a live borg run. The pod's activeDeadlineSeconds bounds the wait.
+            log_msg(f"⚠️  Error reading pod {pod_name} (will retry): {exc}")
 
         time.sleep(10)
 
@@ -729,34 +765,161 @@ def spawn_borg_pod(
     return False
 
 
-def delete_pod(v1: client.CoreV1Api, name: str, namespace: str) -> None:
+def _delete_tracked(
+    operation: Callable[[], Any],
+    kind: str,
+    name: str,
+    tracked: list[str],
+) -> bool:
+    """Delete one object with retries; a 404 counts as done, anything else is logged loudly.
+
+    The name leaves tracking only once the object is known gone, so a failed delete is still
+    visible to the final cleanup pass.
+    """
+    try:
+        k8s_api_retry(operation=operation, context=f"deleting {kind} {name}")
+    except ApiException as exc:
+        if exc.status != 404:
+            log_msg(f"⚠️  Failed to delete {kind} {name}, it is leaked: {exc}")
+            return False
+    except Exception as exc:
+        log_msg(f"⚠️  Failed to delete {kind} {name}, it is leaked: {exc}")
+        return False
+    if name in tracked:
+        tracked.remove(name)
+    return True
+
+
+def delete_pod(v1: client.CoreV1Api, name: str, namespace: str) -> bool:
     """Delete a pod and remove from tracking."""
-    try:
-        v1.delete_namespaced_pod(name, namespace)
-        if name in _tracked_resources["borg_pods"]:
-            _tracked_resources["borg_pods"].remove(name)
-    except ApiException:
-        pass
+    return _delete_tracked(
+        lambda: v1.delete_namespaced_pod(name, namespace), "pod", name, _tracked_resources["borg_pods"]
+    )
 
 
-def delete_pvc(v1: client.CoreV1Api, name: str, namespace: str) -> None:
+def delete_pvc(v1: client.CoreV1Api, name: str, namespace: str) -> bool:
     """Delete a PVC and remove from tracking."""
-    try:
-        v1.delete_namespaced_persistent_volume_claim(name, namespace)
-        if name in _tracked_resources["clone_pvcs"]:
-            _tracked_resources["clone_pvcs"].remove(name)
-    except ApiException:
-        pass
+    return _delete_tracked(
+        lambda: v1.delete_namespaced_persistent_volume_claim(name, namespace),
+        "PVC", name, _tracked_resources["clone_pvcs"],
+    )
 
 
-def delete_secret(v1: client.CoreV1Api, name: str, namespace: str) -> None:
+def delete_secret(v1: client.CoreV1Api, name: str, namespace: str) -> bool:
     """Delete a secret and remove from tracking."""
+    return _delete_tracked(
+        lambda: v1.delete_namespaced_secret(name, namespace), "secret", name, _tracked_resources["ssh_secrets"]
+    )
+
+
+def sweep_age_limit(backups: list[dict[str, Any]]) -> int:
+    """Age beyond which an unused leftover cannot belong to a run still in progress.
+
+    Backups run one after another while all their clones are provisioned up front, so the
+    last clone of a run is first used after every earlier backup finished.
+    """
+    return sum(
+        int(backup["timeout"]) + int(backup.get("cloneBindTimeout", DEFAULT_CLONE_BIND_TIMEOUT))
+        for backup in backups
+        if backup.get("timeout")
+    )
+
+
+def _has_labels(obj: Any, wanted: dict[str, str]) -> bool:
+    labels = obj.metadata.labels or {}
+    return all(labels.get(key) == value for key, value in wanted.items())
+
+
+def _older_than(obj: Any, max_age_seconds: int, now: datetime) -> bool:
+    created = obj.metadata.creation_timestamp
+    return created is not None and (now - created).total_seconds() > max_age_seconds
+
+
+def sweep_stale_resources(
+    v1: client.CoreV1Api,
+    namespace: str,
+    release_name: str,
+    pvc_names: list[str],
+    max_age_seconds: int,
+    now: datetime | None = None,
+) -> dict[str, list[str]]:
+    """Delete clone PVCs, config secrets and borg pods a previous run left behind.
+
+    Only objects of this app are considered: managed-by label plus the names this app's
+    runs generate (`<pvc>-snap-*-clone-*`, `<release>-backup-runner-*`). Objects younger
+    than max_age_seconds and PVCs or secrets mounted by a live pod are left alone.
+
+    Returns:
+        Names deleted, per kind. Listing failures are logged and yield an empty result.
+    """
+    if max_age_seconds <= 0:
+        raise ValueError("max_age_seconds must be positive")
+    now = now or datetime.now(UTC)
+    result: dict[str, list[str]] = {"pvcs": [], "secrets": [], "pods": []}
+    runner_prefix = f"{release_name}-backup-runner-"
+    clone_prefixes = tuple(f"{pvc}-snap-" for pvc in pvc_names)
+
     try:
-        v1.delete_namespaced_secret(name, namespace)
-        if name in _tracked_resources["ssh_secrets"]:
-            _tracked_resources["ssh_secrets"].remove(name)
-    except ApiException:
-        pass
+        pods = v1.list_namespaced_pod(namespace).items
+        pvcs = v1.list_namespaced_persistent_volume_claim(
+            namespace, label_selector="managed-by=kube-borg-backup"
+        ).items
+        secrets = v1.list_namespaced_secret(
+            namespace, label_selector="managed-by=kube-borg-backup,ephemeral=true"
+        ).items
+    except (ApiException, urllib3.exceptions.HTTPError, OSError) as exc:
+        log_msg(f"⚠️  Sweep skipped, could not list leftovers: {exc}")
+        return result
+
+    stale_pods = [
+        p for p in pods
+        if _has_labels(p, {"managed-by": "kube-borg-backup"})
+        and p.metadata.name.startswith(runner_prefix)
+        and _older_than(p, max_age_seconds, now)
+    ]
+    stale_pod_names = {p.metadata.name for p in stale_pods}
+
+    in_use_claims: set[str] = set()
+    in_use_secrets: set[str] = set()
+    for pod in pods:
+        if pod.metadata.name in stale_pod_names or pod.status.phase in {"Succeeded", "Failed"}:
+            continue
+        for vol in pod.spec.volumes or []:
+            if vol.persistent_volume_claim:
+                in_use_claims.add(vol.persistent_volume_claim.claim_name)
+            if vol.secret:
+                in_use_secrets.add(vol.secret.secret_name)
+
+    stale_pvcs = [
+        c for c in pvcs
+        if _has_labels(c, {"managed-by": "kube-borg-backup"})
+        and CLONE_MARKER in c.metadata.name
+        and c.metadata.name.startswith(clone_prefixes)
+        and c.metadata.name not in in_use_claims
+        and _older_than(c, max_age_seconds, now)
+    ]
+    stale_secrets = [
+        s for s in secrets
+        if _has_labels(s, {"managed-by": "kube-borg-backup", "ephemeral": "true"})
+        and s.metadata.name.startswith(runner_prefix)
+        and s.metadata.name not in in_use_secrets
+        and _older_than(s, max_age_seconds, now)
+    ]
+
+    log_msg(
+        f"🧹 Sweep: {len(stale_pvcs)} clone PVC(s), {len(stale_secrets)} config secret(s), "
+        f"{len(stale_pods)} borg pod(s) left over from earlier runs (older than {max_age_seconds}s)"
+    )
+    for pod in stale_pods:
+        if delete_pod(v1, pod.metadata.name, namespace):
+            result["pods"].append(pod.metadata.name)
+    for secret in stale_secrets:
+        if delete_secret(v1, secret.metadata.name, namespace):
+            result["secrets"].append(secret.metadata.name)
+    for pvc in stale_pvcs:
+        if delete_pvc(v1, pvc.metadata.name, namespace):
+            result["pvcs"].append(pvc.metadata.name)
+    return result
 
 
 def create_single_clone_pvc(
@@ -974,14 +1137,6 @@ def process_backup_with_clone(
         True if successful, False if failed
     """
     name = clone_pvc.backup_name
-    timeout = clone_pvc.backup_config.get("timeout")
-
-    if not timeout:
-        log_msg(f"❌ [{name}] Backup config missing timeout field")
-        _failures.append(f"{name}: Config error - missing timeout")
-        return False
-
-    assert isinstance(timeout, int)
 
     log_msg(f"\n{'='*60}")
     log_msg(f"🔄 Processing backup: {name}")
@@ -992,24 +1147,35 @@ def process_backup_with_clone(
         log_msg(f"⏭️  [{name}] Skipping - clone PVC creation failed in Phase 1")
         return False
 
-    # Wait for THIS clone PVC to be ready (while other clones provision in background)
-    clone_bind_timeout = clone_pvc.backup_config.get("cloneBindTimeout", 300)
-    assert isinstance(clone_bind_timeout, int)
-
-    log_msg(f"⏳ [{name}] Waiting for clone PVC to be ready: {clone_pvc.clone_name} (timeout: {clone_bind_timeout}s)")
-    success, error_msg = wait_clone_pvc_ready(v1, clone_pvc.clone_name, namespace, clone_bind_timeout)
-
-    if not success:
-        log_msg(f"❌ [{name}] Clone PVC not ready: {error_msg}")
-        _failures.append(f"{name}: Clone PVC bind failed: {error_msg}")
-        return False
-
-    log_msg(f"✅ [{name}] Clone PVC ready - starting backup")
-
     pod_name = None
     config_secret_name = None
 
+    # Everything after the clone exists runs inside this try, so no exit path leaves it behind.
     try:
+        timeout = clone_pvc.backup_config.get("timeout")
+        if not timeout:
+            log_msg(f"❌ [{name}] Backup config missing timeout field")
+            _failures.append(f"{name}: Config error - missing timeout")
+            return False
+
+        assert isinstance(timeout, int)
+
+        # Wait for THIS clone PVC to be ready (while other clones provision in background)
+        clone_bind_timeout = clone_pvc.backup_config.get("cloneBindTimeout", DEFAULT_CLONE_BIND_TIMEOUT)
+        assert isinstance(clone_bind_timeout, int)
+
+        log_msg(
+            f"⏳ [{name}] Waiting for clone PVC to be ready: {clone_pvc.clone_name} (timeout: {clone_bind_timeout}s)"
+        )
+        success, error_msg = wait_clone_pvc_ready(v1, clone_pvc.clone_name, namespace, clone_bind_timeout)
+
+        if not success:
+            log_msg(f"❌ [{name}] Clone PVC not ready: {error_msg}")
+            _failures.append(f"{name}: Clone PVC bind failed: {error_msg}")
+            return False
+
+        log_msg(f"✅ [{name}] Clone PVC ready - starting backup")
+
         # Step 1: Spawn borg pod (or skip in test mode)
         if test_mode:
             log_msg(f"🧪 TEST MODE: Skipping borg pod spawn for {name}")
@@ -1176,7 +1342,7 @@ def main() -> None:
     This maximizes parallelism - first backup starts as soon as first
     clone is ready, even if other clones are still provisioning.
     """
-    global _namespace, _core_api, _storage_api
+    global _namespace, _core_api, _storage_api, _owner_references
 
     # Register SIGTERM handler
     signal.signal(signal.SIGTERM, lambda s, f: cleanup_all_resources())
@@ -1231,6 +1397,44 @@ def main() -> None:
     log_msg(f"📋 Retention: {retention}")
     log_msg("📋 Strategy: Start all clones in parallel → Wait individually per backup")
 
+    _owner_references = resolve_owner_references(v1, namespace, os.getenv("HOSTNAME"))
+
+    # Leftovers of earlier runs that could not clean up after themselves (SIGKILL, node loss)
+    max_age = sweep_age_limit(backups)
+    if max_age > 0:
+        sweep_stale_resources(
+            v1, namespace, release_name,
+            [str(b["pvc"]) for b in backups if b.get("pvc")],
+            max_age,
+        )
+
+    try:
+        run_backups(v1, snap_api, storage_api, backups, namespace, release_name, pod_config,
+                    borg_repo, borg_passphrase, ssh_private_key, cache_pvc, cache_the_cache,
+                    retention, test_mode)
+    finally:
+        # Whatever an unexpected error left tracked goes now
+        delete_tracked_resources(v1, namespace)
+
+
+
+def run_backups(
+    v1: client.CoreV1Api,
+    snap_api: client.CustomObjectsApi,
+    storage_api: client.StorageV1Api,
+    backups: list[dict[str, Any]],
+    namespace: str,
+    release_name: str,
+    pod_config: dict[str, Any],
+    borg_repo: str,
+    borg_passphrase: str,
+    ssh_private_key: str,
+    cache_pvc: str,
+    cache_the_cache: bool,
+    retention: dict[str, int],
+    test_mode: bool
+) -> None:
+    """Create clones, then run every backup sequentially; failures accumulate in _failures."""
     # Phase 1: Create clone PVCs (snapshot-based) and identify direct backups
     clone_pvcs, direct_pvcs = create_all_clone_pvcs(v1, snap_api, storage_api, backups, namespace)
 
@@ -1270,20 +1474,6 @@ def main() -> None:
             retention, namespace, test_mode
         )
         # Continue even on failure (report all failures at end)
-
-    # Report results
-    log_msg(f"\n{'='*60}")
-    log_msg("📊 Backup Process Complete")
-    log_msg(f"{'='*60}")
-
-    if _failures:
-        log_msg(f"\n❌ {len(_failures)} backup(s) failed:")
-        for failure in _failures:
-            log_msg(f"  - {failure}")
-        log_msg("\n❌ Backup process completed with errors")
-        sys.exit(1)
-
-    log_msg("\n✅ All backups completed successfully!")
 
 
 if __name__ == "__main__":

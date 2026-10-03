@@ -7,3 +7,6 @@ ruff>=0.8.0
 # Type checking
 mypy>=1.13.0
 types-PyYAML>=6.0
+
+# Tests
+pytest>=8.0
