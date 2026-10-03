@@ -19,6 +19,11 @@ following structure::
               - pod: postgres-0
                 container: postgres  # optional
                 command: ["psql", "-c", "SELECT pg_backup_start()"]
+              - pod: postgres-0
+                wait: false  # background; the snapshots do not wait for it to finish ...
+                startedMarker: STARTED  # ... but do wait until it prints this
+                startedTimeoutSeconds: 60  # required with startedMarker
+                command: ["sh", "-c", "psql -c 'SELECT pg_backup_start()' && echo STARTED && sleep 30"]
             post:
               - pod: postgres-0
                 command: ["psql", "-c", "SELECT pg_backup_stop()"]
@@ -33,6 +38,7 @@ import argparse
 import os
 import signal
 import sys
+import threading
 import time
 import concurrent.futures
 from datetime import datetime, UTC
@@ -130,6 +136,69 @@ def transform_hooks_to_common_format(hooks: list[dict[str, Any]]) -> list[dict[s
         transformed_hook = {'type': 'exec', **hook}
         transformed.append(transformed_hook)
     return transformed
+
+
+def start_gate_timeout(hook: dict[str, Any], hook_id: str) -> int | None:
+    """Seconds to wait for a background hook's start marker, or None when it has none.
+
+    Raises:
+        ValueError: If the marker is set on a blocking hook or without a timeout.
+    """
+    if not hook.get("startedMarker"):
+        return None
+    if hook.get("wait", True):
+        raise ValueError(f"{hook_id}: startedMarker only applies to hooks with wait: false")
+    timeout = hook.get("startedTimeoutSeconds")
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
+        raise ValueError(f"{hook_id}: startedMarker requires startedTimeoutSeconds as a positive integer")
+    return timeout
+
+
+def wait_for_hook_start(
+    started: threading.Event,
+    future: concurrent.futures.Future[Any],
+    hook_id: str,
+    timeout: int
+) -> None:
+    """Block until a background hook has printed its start marker.
+
+    Raises:
+        RuntimeError: If the hook ends first (failed, or finished without the marker) or the
+            marker does not appear within the timeout.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if started.is_set():
+            return
+        if future.done():
+            exc = future.exception()
+            if exc is not None:
+                raise RuntimeError(f"{hook_id} failed before signalling start: {exc}")
+            raise RuntimeError(f"{hook_id} finished without printing its startedMarker")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(f"{hook_id} did not signal start within {timeout}s")
+        started.wait(min(0.2, remaining))
+
+
+def failed_background_hooks(futures: dict[str, concurrent.futures.Future[Any]]) -> list[str]:
+    """Wait for every background hook and describe the ones that failed."""
+    failures = []
+    for hook_id, future in futures.items():
+        exc = future.exception()
+        if exc is not None:
+            failures.append(f"{hook_id}: {exc}")
+    return failures
+
+
+def discard_snapshots(api: client.CustomObjectsApi, names: list[str], namespace: str) -> None:
+    """Delete this cycle's snapshots so none of them is kept as a good restore point."""
+    for name in names:
+        try:
+            api.delete_namespaced_custom_object(GROUP, VERSION, namespace, PLURAL, name)
+            print(f"🗑️  Discarded snapshot {name}")
+        except ApiException as exc:
+            print(f"⚠️  Failed to discard snapshot {name}: {exc}", file=sys.stderr)
 
 
 def create_snapshot(
@@ -477,8 +546,16 @@ def main() -> None:
         post_hooks = pvc_cfg.get("hooks", {}).get("post", [])
         all_post_hooks.extend(post_hooks)
 
+    for i, hook in enumerate(all_pre_hooks):
+        try:
+            start_gate_timeout(hook, f"pre-hook-{i}")
+        except ValueError as exc:
+            log_msg(f"❌ Invalid hook config: {exc}")
+            sys.exit(2)
+
     snapshot_failed = False
     failed_pvcs: set[str] = set()
+    cycle_snapshots: list[str] = []
     background_hook_futures: dict[str, concurrent.futures.Future] = {}
     hook_executor = None
 
@@ -508,21 +585,28 @@ def main() -> None:
                         raise RuntimeError("Background hook encountered but executor not initialized")
 
                     transformed = transform_hooks_to_common_format([hook])
+                    gate_timeout = start_gate_timeout(hook, hook_id)
+                    started = threading.Event()
 
-                    def execute_background_hook(hook_config, hook_name):
+                    def execute_background_hook(hook_config, hook_name, started_event):
                         """Background task for non-blocking hook."""
                         print(f"🚀 [Background {hook_name}] Starting...")
                         try:
-                            execute_hooks(api_client, namespace, hook_config, mode="pre")
+                            execute_hooks(api_client, namespace, hook_config, mode="pre", started=started_event)
                             print(f"✅ [Background {hook_name}] Completed")
                             return {'hook': hook_name, 'success': True}
                         except Exception as e:
                             print(f"❌ [Background {hook_name}] Failed: {e}", file=sys.stderr)
                             raise
 
-                    future = hook_executor.submit(execute_background_hook, transformed, hook_id)
+                    future = hook_executor.submit(execute_background_hook, transformed, hook_id, started)
                     background_hook_futures[hook_id] = future
                     print(f"🚀 [{hook_id}] Started in background")
+
+                    if gate_timeout is not None:
+                        print(f"⏳ [{hook_id}] Waiting for its start marker (timeout: {gate_timeout}s)...")
+                        wait_for_hook_start(started, future, hook_id, gate_timeout)
+                        print(f"✅ [{hook_id}] Started")
 
         # Step 2: Create snapshots in parallel
         print(f"\n{'='*60}")
@@ -540,14 +624,31 @@ def main() -> None:
             for future in concurrent.futures.as_completed(futures):
                 pvc_cfg = futures[future]
                 try:
-                    _ = future.result()  # Wait for completion, result unused
+                    cycle_snapshots.append(future.result())
                 except Exception as exc:
                     pvc_name = pvc_cfg.get("name", "unknown")
                     print(f"❌ Failed to create snapshot for {pvc_name}: {exc}", file=sys.stderr)
                     snapshot_failed = True
                     failed_pvcs.add(pvc_name)
 
-        # Step 3: Prune old snapshots
+        # Step 3: Wait for background pre-hooks to complete. A hook that failed may have left
+        # the volumes unquiesced, so none of this cycle's snapshots is kept as a restore point.
+        if background_hook_futures:
+            print(f"\n{'='*60}")
+            print(f"⏳ Waiting for {len(background_hook_futures)} background pre-hook(s) to complete")
+            print(f"{'='*60}\n")
+
+            hook_failures = failed_background_hooks(background_hook_futures)
+            for failure in hook_failures:
+                print(f"❌ Background hook failed: {failure}", file=sys.stderr)
+            if hook_failures:
+                snapshot_failed = True
+                discard_snapshots(custom_api, cycle_snapshots, namespace)
+                failed_pvcs.update(str(pvc_cfg.get("name")) for pvc_cfg in pvcs)
+            else:
+                print("✅ Background hooks completed")
+
+        # Step 4: Prune old snapshots
         if retention:
             print(f"\n{'='*60}")
             print("🗑️  Pruning old snapshots")
@@ -563,20 +664,6 @@ def main() -> None:
                     print(f"⏭️  Skipping prune for {pvc_name}: this cycle's snapshot failed")
                     continue
                 prune_snapshots_tiered(custom_api, pvc_name, retention, namespace)
-
-        # Step 4: Wait for background pre-hooks to complete
-        if background_hook_futures:
-            print(f"\n{'='*60}")
-            print(f"⏳ Waiting for {len(background_hook_futures)} background pre-hook(s) to complete")
-            print(f"{'='*60}\n")
-
-            for hook_id, future in background_hook_futures.items():
-                try:
-                    result = future.result()  # Block until hook completes
-                    print(f"✅ [{hook_id}] Background hook completed: {result}")
-                except Exception as exc:
-                    print(f"❌ [{hook_id}] Background hook failed: {exc}", file=sys.stderr)
-                    snapshot_failed = True
 
     except Exception as exc:
         print(f"\n❌ Error during snapshot process: {exc}", file=sys.stderr)

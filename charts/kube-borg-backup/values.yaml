@@ -151,6 +151,16 @@ restore:
 #               - pod: postgres-0
 #                 # wait: true (default) - blocks here to delay snapshot start
 #                 command: ["sleep", "5"]
+#               # Optional start gate for a wait: false hook: the controller waits until the hook
+#               # prints startedMarker on stdout before the snapshots are taken. If the hook fails or
+#               # prints nothing within startedTimeoutSeconds (required with startedMarker), no
+#               # snapshot is taken. A background hook that fails later in the cycle discards that
+#               # cycle's snapshots. Without startedMarker the snapshots start immediately.
+#               - pod: postgres-0
+#                 wait: false
+#                 startedMarker: STARTED
+#                 startedTimeoutSeconds: 60
+#                 command: ["sh", "-c", "psql -c \"SELECT pg_backup_start('snapshot', true)\" && echo STARTED && sleep 30"]
 #             post:
 #               - pod: postgres-0
 #                 command: ["echo", "Snapshot complete"]

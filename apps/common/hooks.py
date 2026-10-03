@@ -13,6 +13,7 @@ Supported hook types:
 """
 
 import subprocess
+import threading
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from kubernetes import client
@@ -116,7 +117,9 @@ def execute_exec_hook(
     namespace: str,
     resource_string: str,
     command: list[str],
-    container: str | None = None
+    container: str | None = None,
+    started_marker: str | None = None,
+    started: threading.Event | None = None
 ) -> dict[str, str]:
     """Execute command in pod via Kubernetes exec API.
 
@@ -126,6 +129,9 @@ def execute_exec_hook(
         resource_string: Resource in format "pod/name"
         command: Command to execute as list (e.g., ["echo", "test"])
         container: Optional container name (for multi-container pods)
+        started_marker: Optional text; once it appears in the command's stdout, `started` is set
+            while the command keeps running
+        started: Event set when the marker is seen
 
     Returns:
         Dict with 'stdout' and 'stderr' keys
@@ -193,6 +199,8 @@ def execute_exec_hook(
             resp.update(timeout=1)
             if resp.peek_stdout():
                 stdout_output += resp.read_stdout()
+                if started is not None and started_marker and started_marker in stdout_output:
+                    started.set()
             if resp.peek_stderr():
                 stderr_output += resp.read_stderr()
 
@@ -359,7 +367,8 @@ def execute_hooks(
     api_client: client.ApiClient,
     namespace: str,
     hooks: list[dict[str, Any]],
-    mode: str = "pre"
+    mode: str = "pre",
+    started: threading.Event | None = None
 ) -> dict[str, Any]:
     """Execute list of hooks with parallel execution support.
 
@@ -377,6 +386,7 @@ def execute_hooks(
         mode: "pre" (fail-fast) or "post" (best-effort)
             - pre mode: Abort on first failure and raise exception
             - post mode: Continue on failures, collect errors, no exception
+        started: Event set once an exec hook carrying a `startedMarker` prints it
 
     Returns:
         Dict with execution summary:
@@ -425,7 +435,7 @@ def execute_hooks(
             # Execute single hook sequentially
             for hook in batch_hooks:
                 try:
-                    result = _execute_single_hook(api_client, namespace, hook)
+                    result = _execute_single_hook(api_client, namespace, hook, started)
                     results.append(result)
                     executed += 1
                 except Exception as e:
@@ -451,7 +461,7 @@ def execute_hooks(
                 with ThreadPoolExecutor(max_workers=len(batch_hooks)) as executor:
                     # Submit all hooks to executor
                     future_to_hook = {
-                        executor.submit(_execute_single_hook, api_client, namespace, hook): hook
+                        executor.submit(_execute_single_hook, api_client, namespace, hook, started): hook
                         for hook in batch_hooks
                     }
 
@@ -547,7 +557,8 @@ def _group_hooks(hooks: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, 
 def _execute_single_hook(
     api_client: client.ApiClient,
     namespace: str,
-    hook: dict[str, Any]
+    hook: dict[str, Any],
+    started: threading.Event | None = None
 ) -> Any:
     """Execute single hook based on type.
 
@@ -555,6 +566,7 @@ def _execute_single_hook(
         api_client: Kubernetes API client
         namespace: Namespace for hook execution
         hook: Hook configuration dict
+        started: Event set when an exec hook prints its `startedMarker`
 
     Returns:
         Result from hook execution (type depends on hook type)
@@ -588,7 +600,9 @@ def _execute_single_hook(
             namespace,
             resource_string,
             hook['command'],
-            hook.get('container')
+            hook.get('container'),
+            hook.get('startedMarker'),
+            started
         )
 
     elif hook_type == 'scale':
