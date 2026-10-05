@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.5.1] - 2026-10-05
+
+### Fixed
+- **A paused PVC was read in full on its next backup**: every archive of an app shares one borg files cache, and borg drops an entry once 20 creates in a row have not seen its file. When one PVC's backup failed for some hours while the app's other PVCs kept running, its entries aged out and the next run re-read the whole volume. The runner now sets `BORG_FILES_CACHE_TTL=1000`; a value set in the pod's environment wins.
+
 ## [6.5.0] - 2026-10-03
 
 ### Fixed

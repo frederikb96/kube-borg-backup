@@ -93,6 +93,9 @@ def setup_ssh_key(ssh_key_content: str) -> str:
         sys.exit(1)
 
 
+FILES_CACHE_TTL = '1000'
+
+
 def get_borg_env(config: dict, ssh_key_file: str, cache_dir: str = '/cache') -> dict:
     """Build environment variables for borg commands.
 
@@ -109,6 +112,11 @@ def get_borg_env(config: dict, ssh_key_file: str, cache_dir: str = '/cache') -> 
     env['BORG_PASSPHRASE'] = config['borgPassphrase']
     env['BORG_RSH'] = f"ssh -o IdentityFile={ssh_key_file} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no"
     env['BORG_CACHE_DIR'] = cache_dir
+    # All archives of an app share one files cache, and borg ages an entry on every
+    # create that does not see its file. At borg's default of 20, a PVC whose backup
+    # pauses while the app's other PVCs keep running loses its entries within hours
+    # and is read in full again on its next run.
+    env.setdefault('BORG_FILES_CACHE_TTL', FILES_CACHE_TTL)
 
     return env
 
