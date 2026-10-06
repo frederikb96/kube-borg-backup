@@ -186,11 +186,11 @@ The tool consists of three components:
 2. **Backup CronJob** - Python controller that creates clone PVCs and orchestrates Borg pods
 3. **Borg Pods** - Ephemeral privileged pods spawned per backup to run actual `borg create` and `borg prune`
 
-Both CronJobs use the unified `kube-borg-backup/controller` image (Python 3.13) with different entrypoints.
-Borg pods use the `kube-borg-backup/backup-runner` image (Alpine + borgbackup + Python 3.13).
+Both CronJobs use the unified `kube-borg-backup/controller` image (Python 3.14) with different entrypoints.
+Borg pods use the `kube-borg-backup/backup-runner` image (Alpine + borgbackup + Python 3.14).
 
 **Technologies:**
-- Python 3.13 with kubernetes client library
+- Python 3.14 with kubernetes client library
 - BorgBackup for deduplication and compression
 - Kubernetes CSI VolumeSnapshot API
 - Helm 3 for packaging
