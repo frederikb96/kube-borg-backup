@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.5.2] - 2026-10-06
+
+### Changed
+- Both images run Python 3.14 (`python:3.14-slim` for the controller, `python:3.14-alpine` for the backup-runner).
+- CI lints the chart with Helm 4 and uses the current major versions of the GitHub Actions; Renovate keeps the dependencies current.
+
 ## [6.5.1] - 2026-10-05
 
 ### Fixed
