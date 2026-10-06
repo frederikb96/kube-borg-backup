@@ -1,4 +1,4 @@
-FROM python:3.13-alpine
+FROM python:3.14-alpine
 
 # Install system dependencies for borg, ssh, rsync, and FUSE
 # Note: pyfuse3 and borgbackup require many dev libraries for compilation
