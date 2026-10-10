@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.5.4] - 2026-10-10
+
+### Changed
+- The controller image installs `kubernetes==37.0.1`. The client now ships inline type hints, and the controller and shared modules are typed against them (optional API fields are narrowed instead of assumed, custom-object responses are typed as dicts); runtime behaviour is unchanged.
+
 ## [6.5.3] - 2026-10-10
 
 ### Changed

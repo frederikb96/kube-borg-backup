@@ -269,6 +269,7 @@ def execute_scale_hook(
     patch_body = {"spec": {"replicas": replicas}}
 
     # Patch resource based on kind
+    result: client.V1Deployment | client.V1StatefulSet
     try:
         if kind == 'Deployment':
             result = apps_v1.patch_namespaced_deployment(
@@ -288,6 +289,8 @@ def execute_scale_hook(
         ) from e
 
     # Return current replica count from patched object
+    if result.spec is None or result.spec.replicas is None:
+        raise Exception(f"Patched {kind} '{name}' in namespace '{namespace}' reports no replica count")
     return result.spec.replicas
 
 

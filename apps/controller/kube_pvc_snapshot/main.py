@@ -43,7 +43,7 @@ import time
 import concurrent.futures
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from kubernetes import client, config as k8s_config
@@ -260,7 +260,7 @@ def wait_snapshot_ready(
     """
     end = time.time() + timeout
     while time.time() < end:
-        snap = api.get_namespaced_custom_object(GROUP, VERSION, namespace, PLURAL, name)
+        snap = cast(dict[str, Any], api.get_namespaced_custom_object(GROUP, VERSION, namespace, PLURAL, name))
         if snap.get("status", {}).get("readyToUse"):
             return
         time.sleep(2)
@@ -348,10 +348,10 @@ def prune_snapshots_tiered(
         namespace: Kubernetes namespace
     """
     # Fetch all snapshots for this PVC
-    snaps = api.list_namespaced_custom_object(
+    snaps = cast(dict[str, Any], api.list_namespaced_custom_object(
         GROUP, VERSION, namespace, PLURAL,
         label_selector=f"pvc={pvc_name}"
-    )
+    ))
     items = snaps.get("items", [])
 
     if not items:

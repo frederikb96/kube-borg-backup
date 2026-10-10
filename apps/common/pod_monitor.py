@@ -8,6 +8,9 @@ Provides background thread-based monitoring of Kubernetes pods with:
 
 import threading
 import time
+from typing import cast
+
+import urllib3
 from kubernetes import client, watch
 from kubernetes.client.exceptions import ApiException
 
@@ -89,14 +92,17 @@ class PodMonitor:
                     pod = self.v1.read_namespaced_pod(self.pod_name, self.namespace)
 
                     # Check container status (not just pod phase)
-                    if pod.status.container_statuses:
-                        for container in pod.status.container_statuses:
+                    statuses = pod.status.container_statuses if pod.status else None
+                    if statuses:
+                        for container in statuses:
+                            state = container.state
+
                             # Container running - ready to stream!
-                            if container.state.running and container.state.running.started_at:
+                            if state and state.running and state.running.started_at:
                                 break
 
                             # Container terminated (succeeded/failed) - need fallback
-                            if container.state.terminated:
+                            if state and state.terminated:
                                 break
                         else:
                             # No container ready yet, keep polling
@@ -116,18 +122,19 @@ class PodMonitor:
 
             # Try streaming logs with follow=True
             try:
-                log_stream = self.v1.read_namespaced_pod_log(
+                # _preload_content=False returns the raw urllib3 response, typed as str by the client
+                log_stream = cast(urllib3.HTTPResponse, self.v1.read_namespaced_pod_log(
                     self.pod_name,
                     self.namespace,
                     follow=True,  # Always try follow first
                     _preload_content=False
-                )
+                ))
 
                 # Stream logs line by line
-                for line in log_stream:
+                for raw_line in log_stream:
                     if self.stop_event.is_set():
                         break
-                    line_str = line.decode('utf-8').rstrip('\n\r')
+                    line_str = raw_line.decode('utf-8').rstrip('\n\r')
                     if line_str:
                         print(f"[{self.pod_name}] {line_str}", flush=True)
 
