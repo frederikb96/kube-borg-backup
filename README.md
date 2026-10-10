@@ -197,21 +197,19 @@ Borg pods use the `kube-borg-backup/backup-runner` image (Alpine + borgbackup + 
 
 ## Development
 
-**Linting and Type Checking:**
+**Checks** (the pull request gate runs the same, plus chart lint; `CI ok` is the required check):
 
 ```bash
-# Set up testing venv
-cd apps
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-dev.txt -r controller/requirements.txt
+pip install -r apps/requirements-dev.txt -r apps/controller/requirements.txt
 
-# Run linting
 ruff check apps/
-
-# Run type checking
 mypy --config-file mypy.ini
+pytest
 ```
+
+A change under `charts/` needs a bumped `version` in `charts/kube-borg-backup/Chart.yaml` (chart-testing enforces it).
 
 ## Contributing
 
