@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import urllib3
 import yaml
@@ -192,7 +192,7 @@ def is_longhorn_volume(v1: client.CoreV1Api, pvc: Any) -> bool:
         pv = v1.read_persistent_volume(pvc.spec.volume_name)
 
         # Check CSI driver
-        if pv.spec.csi and pv.spec.csi.driver == "driver.longhorn.io":
+        if pv.spec and pv.spec.csi and pv.spec.csi.driver == "driver.longhorn.io":
             return True
 
         return False
@@ -223,13 +223,13 @@ def is_longhorn_volume_ready(pv_name: str) -> bool:
         custom_api = client.CustomObjectsApi()
 
         # Query Longhorn volume CRD
-        lh_volume = custom_api.get_namespaced_custom_object(
+        lh_volume = cast(dict[str, Any], custom_api.get_namespaced_custom_object(
             group="longhorn.io",
             version="v1beta2",
             namespace="longhorn-system",  # Longhorn convention - always installs here
             plural="volumes",
             name=pv_name
-        )
+        ))
 
         # Extract status fields (no 'ready' field exists in v1beta2)
         status = lh_volume.get("status", {})
@@ -283,10 +283,10 @@ def latest_snapshot(
         Snapshot name, or None if not found
     """
     try:
-        snaps = snap_api.list_namespaced_custom_object(
+        snaps = cast(dict[str, Any], snap_api.list_namespaced_custom_object(
             SNAP_GROUP, SNAP_VERSION, namespace, SNAP_PLURAL,
             label_selector=f"pvc={pvc}"
-        )
+        ))
         items = [s for s in snaps.get("items", []) if s.get("status", {}).get("readyToUse")]
         items.sort(key=lambda s: s.get("metadata", {}).get("creationTimestamp", ""))
         if not items:
@@ -315,7 +315,7 @@ def resolve_owner_references(v1: client.CoreV1Api, namespace: str, pod_name: str
     except (ApiException, urllib3.exceptions.HTTPError, OSError) as exc:
         log_msg(f"⚠️  Could not read own pod {pod_name} to find its Job: {exc}")
         return []
-    for owner in pod.metadata.owner_references or []:
+    for owner in (pod.metadata.owner_references if pod.metadata else None) or []:
         if owner.kind == "Job":
             return [{
                 "apiVersion": owner.api_version,
@@ -362,7 +362,10 @@ def create_clone_pvc(
     Raises:
         ApiException: If clone creation fails
     """
-    snap = snap_api.get_namespaced_custom_object(SNAP_GROUP, SNAP_VERSION, namespace, SNAP_PLURAL, snap_name)
+    snap = cast(
+        dict[str, Any],
+        snap_api.get_namespaced_custom_object(SNAP_GROUP, SNAP_VERSION, namespace, SNAP_PLURAL, snap_name),
+    )
     size = snap.get("status", {}).get("restoreSize", "1Gi")
 
     body = {
@@ -383,8 +386,10 @@ def create_clone_pvc(
 
     # Tracked before the create: a create whose response is lost can still have succeeded.
     _tracked_resources["clone_pvcs"].append(clone_name)
+    # The client serializes a plain dict body as-is; the cast only satisfies its model-typed signature.
+    pvc_body = cast(client.V1PersistentVolumeClaim, body)
     k8s_api_retry(
-        operation=lambda: v1.create_namespaced_persistent_volume_claim(namespace, body),
+        operation=lambda: v1.create_namespaced_persistent_volume_claim(namespace, pvc_body),
         context=f"creating clone PVC {clone_name}",
         on_conflict=lambda: v1.read_namespaced_persistent_volume_claim(clone_name, namespace),
     )
@@ -453,7 +458,7 @@ def create_borg_secret(
     # Tracked before the create: a create whose response is lost can still have succeeded.
     _tracked_resources["ssh_secrets"].append(secret_name)
     k8s_api_retry(
-        operation=lambda: v1.create_namespaced_secret(namespace, body),
+        operation=lambda: v1.create_namespaced_secret(namespace, cast(client.V1Secret, body)),
         context=f"creating config secret {secret_name}",
         on_conflict=lambda: v1.read_namespaced_secret(secret_name, namespace),
     )
@@ -504,14 +509,15 @@ def wait_clone_pvc_ready(
         try:
             # Get PVC status
             pvc = v1.read_namespaced_persistent_volume_claim(pvc_name, namespace)
-            status = pvc.status.phase
+            status = pvc.status.phase if pvc.status else None
 
             # Check if Bound
             if status == "Bound":
                 log_msg(f"✅ PVC {pvc_name} is Bound after {elapsed}s")
 
                 # If PVC is Bound, check if it's Longhorn and wait for workload readiness
-                if is_longhorn_volume(v1, pvc):
+                pv_name = pvc.spec.volume_name if pvc.spec else None
+                if pv_name and is_longhorn_volume(v1, pvc):
                     log_msg("⏳ Longhorn volume detected, waiting for workload readiness...")
 
                     # Wait for Longhorn volume to be ready for workload
@@ -519,7 +525,7 @@ def wait_clone_pvc_ready(
                     remaining_timeout = timeout - elapsed
                     lh_start = time.time()
                     while time.time() - lh_start < remaining_timeout:
-                        if is_longhorn_volume_ready(pvc.spec.volume_name):
+                        if is_longhorn_volume_ready(pv_name):
                             lh_elapsed = int(time.time() - lh_start)
                             log_msg(f"✅ Longhorn volume ready (attached+healthy) after {lh_elapsed}s")
 
@@ -553,7 +559,8 @@ def wait_clone_pvc_ready(
                         field_selector=f"involvedObject.name={pvc_name},involvedObject.kind=PersistentVolumeClaim"
                     )
                     for event in events.items:
-                        if "WaitForFirstConsumer" in event.message or "waiting for first consumer" in event.message:
+                        message = event.message or ""
+                        if "WaitForFirstConsumer" in message or "waiting for first consumer" in message:
                             log_msg(f"🕓 PVC {pvc_name} waiting for first consumer after {elapsed}s - ready to use")
                             return True, ""
 
@@ -599,9 +606,9 @@ def _check_pvc_events_for_errors(
 
         for event in events.items:
             if event.type in ["Warning", "Error"]:
-                message = event.message.lower()
-                if any(keyword in message for keyword in error_keywords):
-                    return event.message
+                message = event.message or ""
+                if any(keyword in message.lower() for keyword in error_keywords):
+                    return message
 
         return ""
     except ApiException:
@@ -720,7 +727,7 @@ def spawn_borg_pod(
     _tracked_resources["borg_pods"].append(pod_name)
     try:
         k8s_api_retry(
-            operation=lambda: v1.create_namespaced_pod(namespace, manifest),
+            operation=lambda: v1.create_namespaced_pod(namespace, cast(client.V1Pod, manifest)),
             context=f"creating borg pod {pod_name}",
             on_conflict=lambda: v1.read_namespaced_pod(pod_name, namespace),
         )
@@ -739,7 +746,7 @@ def spawn_borg_pod(
     while time.time() < end:
         try:
             pod = v1.read_namespaced_pod(pod_name, namespace)
-            phase = pod.status.phase
+            phase = pod.status.phase if pod.status else None
 
             if phase in {"Succeeded", "Failed"}:
                 # Stop monitoring threads
@@ -825,13 +832,20 @@ def sweep_age_limit(backups: list[dict[str, Any]]) -> int:
     )
 
 
-def _has_labels(obj: Any, wanted: dict[str, str]) -> bool:
-    labels = obj.metadata.labels or {}
+_SweptObject = client.V1Pod | client.V1Secret | client.V1PersistentVolumeClaim
+
+
+def _name(obj: _SweptObject) -> str:
+    return (obj.metadata.name if obj.metadata else None) or ""
+
+
+def _has_labels(obj: _SweptObject, wanted: dict[str, str]) -> bool:
+    labels = (obj.metadata.labels if obj.metadata else None) or {}
     return all(labels.get(key) == value for key, value in wanted.items())
 
 
-def _older_than(obj: Any, max_age_seconds: int, now: datetime) -> bool:
-    created = obj.metadata.creation_timestamp
+def _older_than(obj: _SweptObject, max_age_seconds: int, now: datetime) -> bool:
+    created = obj.metadata.creation_timestamp if obj.metadata else None
     return created is not None and (now - created).total_seconds() > max_age_seconds
 
 
@@ -874,35 +888,36 @@ def sweep_stale_resources(
     stale_pods = [
         p for p in pods
         if _has_labels(p, {"managed-by": "kube-borg-backup"})
-        and p.metadata.name.startswith(runner_prefix)
+        and _name(p).startswith(runner_prefix)
         and _older_than(p, max_age_seconds, now)
     ]
-    stale_pod_names = {p.metadata.name for p in stale_pods}
+    stale_pod_names = {_name(p) for p in stale_pods}
 
     in_use_claims: set[str] = set()
     in_use_secrets: set[str] = set()
     for pod in pods:
-        if pod.metadata.name in stale_pod_names or pod.status.phase in {"Succeeded", "Failed"}:
+        phase = pod.status.phase if pod.status else None
+        if _name(pod) in stale_pod_names or phase in {"Succeeded", "Failed"}:
             continue
-        for vol in pod.spec.volumes or []:
+        for vol in (pod.spec.volumes if pod.spec else None) or []:
             if vol.persistent_volume_claim:
                 in_use_claims.add(vol.persistent_volume_claim.claim_name)
-            if vol.secret:
+            if vol.secret and vol.secret.secret_name:
                 in_use_secrets.add(vol.secret.secret_name)
 
     stale_pvcs = [
         c for c in pvcs
         if _has_labels(c, {"managed-by": "kube-borg-backup"})
-        and CLONE_MARKER in c.metadata.name
-        and c.metadata.name.startswith(clone_prefixes)
-        and c.metadata.name not in in_use_claims
+        and CLONE_MARKER in _name(c)
+        and _name(c).startswith(clone_prefixes)
+        and _name(c) not in in_use_claims
         and _older_than(c, max_age_seconds, now)
     ]
     stale_secrets = [
         s for s in secrets
         if _has_labels(s, {"managed-by": "kube-borg-backup", "ephemeral": "true"})
-        and s.metadata.name.startswith(runner_prefix)
-        and s.metadata.name not in in_use_secrets
+        and _name(s).startswith(runner_prefix)
+        and _name(s) not in in_use_secrets
         and _older_than(s, max_age_seconds, now)
     ]
 
@@ -911,14 +926,14 @@ def sweep_stale_resources(
         f"{len(stale_pods)} borg pod(s) left over from earlier runs (older than {max_age_seconds}s)"
     )
     for pod in stale_pods:
-        if delete_pod(v1, pod.metadata.name, namespace):
-            result["pods"].append(pod.metadata.name)
+        if delete_pod(v1, _name(pod), namespace):
+            result["pods"].append(_name(pod))
     for secret in stale_secrets:
-        if delete_secret(v1, secret.metadata.name, namespace):
-            result["secrets"].append(secret.metadata.name)
+        if delete_secret(v1, _name(secret), namespace):
+            result["secrets"].append(_name(secret))
     for pvc in stale_pvcs:
-        if delete_pvc(v1, pvc.metadata.name, namespace):
-            result["pvcs"].append(pvc.metadata.name)
+        if delete_pvc(v1, _name(pvc), namespace):
+            result["pvcs"].append(_name(pvc))
     return result
 
 
