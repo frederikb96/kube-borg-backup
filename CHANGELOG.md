@@ -7,8 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.5.3] - 2026-10-10
+
 ### Changed
-- The controller image installs `kubernetes==36.0.0` instead of the newest release, so image builds are reproducible and type checking stays green; the next release of the client ships inline type hints and needs source changes first.
+- The controller image installs `kubernetes==36.0.3` (bug fixes in watch streaming, leader election and quantity formatting) instead of the newest release, so image builds are reproducible and type checking stays green; the next major of the client ships inline type hints and needs source changes first.
 - Pull request checks (ruff, mypy, pytest, chart lint) run in one workflow and report through a single `CI ok` job; they run on pull requests only.
 
 ## [6.5.2] - 2026-10-06
