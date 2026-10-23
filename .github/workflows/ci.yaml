@@ -118,7 +118,7 @@ jobs:
         with: { python-version: "3.x", check-latest: true }
 
       - name: Install chart-testing
-        uses: helm/chart-testing-action@v2.8.0
+        uses: helm/chart-testing-action@v2.9.0
 
       - name: List changed charts
         id: list
