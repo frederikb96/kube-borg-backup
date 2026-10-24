@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.5.5] - 2026-10-24
+
+### Changed
+- Both images run Python 3.15 (`python:3.15-slim` for the controller, `python:3.15-alpine` for the backup-runner).
+
 ## [6.5.4] - 2026-10-10
 
 ### Changed
