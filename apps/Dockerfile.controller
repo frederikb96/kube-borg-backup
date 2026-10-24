@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 # Ensure Python output is not buffered (important for kubectl logs)
 ENV PYTHONUNBUFFERED=1
