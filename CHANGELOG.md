@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.5.6] - 2026-11-07
+
+### Changed
+- Updated the Kubernetes Python client to 37.0.2.
+
 ## [6.5.5] - 2026-10-24
 
 ### Changed
