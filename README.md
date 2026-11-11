@@ -7,7 +7,7 @@
 </td>
 <td>
 <h1>kube-borg-backup</h1>
-Instant CSI snapshots and asynchronous BorgBackup for the persistent volumes of a Kubernetes application
+Instant CSI snapshots, backed up asynchronously and deduplicated to an append-only BorgBackup repository
 </td>
 </tr>
 </table>
