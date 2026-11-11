@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - The GitHub Release of a version carries that version's CHANGELOG section as its notes and is marked as a pre-release for `-rc`, `-beta` and `-alpha` tags.
-- The README is a front page; hooks, restore procedures, snapshot and direct mode and development notes moved to `docs/`.
+- The README is a front page that leads with instant snapshots backed up to an append-only Borg repository; hooks, restore procedures, snapshot and direct mode and development notes moved to `docs/`.
 
 ## [6.5.6] - 2026-11-07
 
