@@ -12,8 +12,8 @@ Instant CSI snapshots, backed up asynchronously and deduplicated to an append-on
 </tr>
 </table>
 
-[![CI](https://github.com/frederikb96/kube-borg-backup/actions/workflows/ci.yaml/badge.svg)](https://github.com/frederikb96/kube-borg-backup/actions/workflows/ci.yaml)
-[![Release](https://img.shields.io/github/v/release/frederikb96/kube-borg-backup)](https://github.com/frederikb96/kube-borg-backup/releases)
+[![CI](https://github.com/frederikberg/kube-borg-backup/actions/workflows/ci.yaml/badge.svg)](https://github.com/frederikberg/kube-borg-backup/actions/workflows/ci.yaml)
+[![Release](https://img.shields.io/github/v/release/frederikberg/kube-borg-backup)](https://github.com/frederikberg/kube-borg-backup/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 One Helm install backs up everything a stateful application keeps. The storage layer takes CSI snapshots in seconds while the application keeps running, with the database paused only for that moment, so nothing has to be shut down and snapshots can run as often as you like. A second job copies the latest snapshots into a deduplicated Borg repository in the background. Point it at an append-only repository and the credentials in the cluster can add backups but not erase old ones, so neither an attacker nor a mistake can destroy past backups. The price is a storage class with CSI snapshot support, which Longhorn has. Restoring is one `kbb` command, either from a local snapshot or from a Borg archive.
@@ -65,7 +65,7 @@ The two CronJobs run on their own schedules and meet only at the VolumeSnapshots
 ## Install
 
 ```bash
-helm repo add kube-borg-backup https://frederikb96.github.io/kube-borg-backup
+helm repo add kube-borg-backup https://frederikberg.github.io/kube-borg-backup
 helm repo update
 
 # every option, with inline documentation

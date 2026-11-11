@@ -26,5 +26,5 @@ Both controllers handle `SIGTERM`: pods are deleted, clone PVCs and Secrets remo
 
 - **controller** image: the Python controllers for the two CronJobs, `python -m kube_pvc_snapshot.main` and `python -m kube_snapshot_borgbackup.main`.
 - **backup-runner** image: Alpine with BorgBackup, FUSE and rsync; used for backup, listing, archive restore and snapshot restore pods.
-- Both are published for amd64 and arm64 to `ghcr.io/frederikb96/kube-borg-backup/`, tagged with the release version, and `latest` for stable releases.
+- Both are published for amd64 and arm64 to `ghcr.io/frederikberg/kube-borg-backup/`, tagged with the release version, and `latest` for stable releases.
 - The chart renders the CronJobs, the config Secrets the controllers and `kbb` read, the RBAC, the optional Borg cache PVC and namespace.
