@@ -7,12 +7,12 @@ long_description = readme.read_text() if readme.exists() else ""
 
 setup(
     name='kube-borg-backup-cli',
-    version='6.5.6',
+    version='6.5.7',
     author='Frederik Berg',
     description='CLI tool for kube-borg-backup restore operations',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    url='https://github.com/frederikb96/kube-borg-backup',
+    url='https://github.com/frederikberg/kube-borg-backup',
     # Explicitly list packages and their source directories
     packages=['kbb', 'kbb.commands', 'common'],
     package_dir={

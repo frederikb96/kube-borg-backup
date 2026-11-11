@@ -5,11 +5,11 @@ Restores run through the `kbb` CLI from a machine with `kubectl` access to the c
 ## Install the CLI
 
 ```bash
-# a release tag from https://github.com/frederikb96/kube-borg-backup/releases
-pipx install --force "git+https://github.com/frederikb96/kube-borg-backup.git@<tag>#subdirectory=apps"
+# a release tag from https://github.com/frederikberg/kube-borg-backup/releases
+pipx install --force "git+https://github.com/frederikberg/kube-borg-backup.git@<tag>#subdirectory=apps"
 
 # or the current main branch
-pipx install --force "git+https://github.com/frederikb96/kube-borg-backup.git#subdirectory=apps"
+pipx install --force "git+https://github.com/frederikberg/kube-borg-backup.git#subdirectory=apps"
 
 pipx uninstall kube-borg-backup-cli
 ```

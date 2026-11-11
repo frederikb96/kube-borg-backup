@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.5.7] - 2026-11-11
+
 ### Added
 - `scripts/check_release_versions.py` checks that the chart, both `VERSION` files and `setup.py` carry the same version and that the CHANGELOG has a section for it. It runs in every pull request and, with the tag, at the start of the release pipeline.
 
 ### Changed
+- The chart, the controller and the `kbb` CLI default to images under `ghcr.io/frederikberg/kube-borg-backup/`, and the README, docs and chart metadata point to the `frederikberg` GitHub account (Helm repository `https://frederikberg.github.io/kube-borg-backup`). Images and charts published under the former account name are no longer reachable from the registry; set `image.repository` explicitly to keep an older chart working.
 - The GitHub Release of a version carries that version's CHANGELOG section as its notes and is marked as a pre-release for `-rc`, `-beta` and `-alpha` tags.
 - The README is a front page that leads with instant snapshots backed up to an append-only Borg repository; hooks, restore procedures, snapshot and direct mode and development notes moved to `docs/`.
 
@@ -995,8 +998,8 @@ apps:
 
 - **GHCR Package Naming**
   - Renamed from flat naming to hierarchical structure:
-    - `ghcr.io/frederikb96/kube-borg-backup-controller` → `ghcr.io/frederikb96/kube-borg-backup/controller`
-    - `ghcr.io/frederikb96/kube-borg-backup-essentials` → `ghcr.io/frederikb96/kube-borg-backup/backup-runner`
+    - `ghcr.io/frederikberg/kube-borg-backup-controller` → `ghcr.io/frederikberg/kube-borg-backup/controller`
+    - `ghcr.io/frederikberg/kube-borg-backup-essentials` → `ghcr.io/frederikberg/kube-borg-backup/backup-runner`
   - Better organization and follows GHCR best practices
   - Old packages deprecated, all users must update Helm values
 
@@ -1018,8 +1021,8 @@ apps:
 ### Changed
 
 - **Image Tags**
-  - Controller image: `ghcr.io/frederikb96/kube-borg-backup/controller:3.0.0`
-  - Backup-runner image: `ghcr.io/frederikb96/kube-borg-backup/backup-runner:3.0.0`
+  - Controller image: `ghcr.io/frederikberg/kube-borg-backup/controller:3.0.0`
+  - Backup-runner image: `ghcr.io/frederikberg/kube-borg-backup/backup-runner:3.0.0`
   - Helm chart version: `3.0.0`
 
 - **Default Values**
@@ -1035,13 +1038,13 @@ apps:
 borgbackup:
   pod:
     image:
-      repository: ghcr.io/frederikb96/kube-borg-backup-essentials
+      repository: ghcr.io/frederikberg/kube-borg-backup-essentials
 
 # NEW (v3.0.0)
 borgbackup:
   pod:
     image:
-      repository: ghcr.io/frederikb96/kube-borg-backup/backup-runner
+      repository: ghcr.io/frederikberg/kube-borg-backup/backup-runner
 ```
 
 **For GitOps Users (Flux, ArgoCD):**
@@ -1193,8 +1196,8 @@ borgbackup:
 
 ### Technical Details
 
-- **Controller Image**: `ghcr.io/frederikb96/kube-borg-backup/controller:2.0.0` (Python 3.13-slim, 2 entrypoints)
-- **Essentials Image**: `ghcr.io/frederikb96/kube-borg-backup/backup-runner:2.0.0` (Python 3.13-alpine + borgbackup)
+- **Controller Image**: `ghcr.io/frederikberg/kube-borg-backup/controller:2.0.0` (Python 3.13-slim, 2 entrypoints)
+- **Essentials Image**: `ghcr.io/frederikberg/kube-borg-backup/backup-runner:2.0.0` (Python 3.13-alpine + borgbackup)
 - **Helm Chart**: `kube-borg-backup` v2.0.0
 - **Kubernetes**: Requires 1.25+ with CSI VolumeSnapshot support
 - **Testing**: Comprehensive test suite (Python direct, Docker, Helm)
@@ -1216,6 +1219,6 @@ borgbackup:
 - Renamed from `pvc-csi-snapshot-borgbackup-helm` to `kube-borg-backup`
 - Restructured repository for cleaner organization
 
-[Unreleased]: https://github.com/frederikb96/kube-borg-backup/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/frederikb96/kube-borg-backup/compare/v1.0.0...v2.0.0
-[1.0.0]: https://github.com/frederikb96/kube-borg-backup/releases/tag/v1.0.0
+[Unreleased]: https://github.com/frederikberg/kube-borg-backup/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/frederikberg/kube-borg-backup/compare/v1.0.0...v2.0.0
+[1.0.0]: https://github.com/frederikberg/kube-borg-backup/releases/tag/v1.0.0

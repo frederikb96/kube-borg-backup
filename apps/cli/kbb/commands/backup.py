@@ -35,7 +35,7 @@ def list_borg_archives(args: argparse.Namespace) -> None:
 
         # Extract image config from pod section (with fallback for backward compatibility)
         pod_config = config.get('pod', {})
-        default_repo = 'ghcr.io/frederikb96/kube-borg-backup/backup-runner'
+        default_repo = 'ghcr.io/frederikberg/kube-borg-backup/backup-runner'
         image_repository = pod_config.get('image', {}).get('repository', default_repo)
         image_tag = pod_config.get('image', {}).get('tag', 'latest')
         image = f"{image_repository}:{image_tag}"
@@ -362,7 +362,7 @@ def restore_borg_archive(args: argparse.Namespace) -> None:
 
         # Extract image config from pod section (with fallback for backward compatibility)
         pod_config = config.get('pod', {})
-        default_repo = 'ghcr.io/frederikb96/kube-borg-backup/backup-runner'
+        default_repo = 'ghcr.io/frederikberg/kube-borg-backup/backup-runner'
         image_repository = pod_config.get('image', {}).get('repository', default_repo)
         image_tag = pod_config.get('image', {}).get('tag', 'latest')
         image = f"{image_repository}:{image_tag}"
