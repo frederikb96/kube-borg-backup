@@ -13,6 +13,23 @@ permissions:
   packages: write
 
 jobs:
+  # Step 1: every version location and the CHANGELOG agree with the tag
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check versions against the tag
+        run: python3 scripts/check_release_versions.py "$GITHUB_REF_NAME"
+
+      - name: Cut the release notes from the CHANGELOG
+        run: python3 scripts/extract_changelog.py "$GITHUB_REF_NAME" > release-notes.md
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: release-notes.md
+
   # Step 1: Python linting (must pass first)
   lint:
     runs-on: ubuntu-latest
@@ -29,7 +46,7 @@ jobs:
           pip install -r apps/requirements-dev.txt
 
       - name: Run ruff
-        run: ruff check apps/
+        run: ruff check apps/ scripts/
 
   # Step 1: Type checking (runs in parallel with lint)
   typecheck:
@@ -80,10 +97,10 @@ jobs:
       - name: Run pytest
         run: pytest
 
-  # Step 2: Helm chart release (only after lint, typecheck, helm-lint, and test pass)
+  # Step 2: Helm chart release (only after guard, lint, typecheck, helm-lint, and test pass)
   release-helm:
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, helm-lint, test]
+    needs: [guard, lint, typecheck, helm-lint, test]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -102,12 +119,23 @@ jobs:
         env:
           CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CR_RELEASE_NAME_TEMPLATE: "v{{ .Version }}"
-          CR_GENERATE_RELEASE_NOTES: true
 
-  # Step 2: Controller image (only after lint, typecheck, helm-lint, and test pass)
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+
+      - name: Put the CHANGELOG section into the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          flags=()
+          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md "${flags[@]}"
+
+  # Step 2: Controller image (only after guard, lint, typecheck, helm-lint, and test pass)
   build-controller:
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, helm-lint, test]
+    needs: [guard, lint, typecheck, helm-lint, test]
     steps:
       - uses: actions/checkout@v7
 
@@ -151,10 +179,10 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/kube-borg-backup/controller:${{ steps.ver.outputs.version }}
             ${{ steps.ver.outputs.is_prerelease == 'false' && format('ghcr.io/{0}/kube-borg-backup/controller:latest', github.repository_owner) || '' }}
 
-  # Step 2: Backup-runner image (only after lint, typecheck, helm-lint, and test pass)
+  # Step 2: Backup-runner image (only after guard, lint, typecheck, helm-lint, and test pass)
   build-backup-runner:
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, helm-lint, test]
+    needs: [guard, lint, typecheck, helm-lint, test]
     steps:
       - uses: actions/checkout@v7
 

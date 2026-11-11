@@ -1,234 +1,101 @@
-[![Release](https://img.shields.io/github/v/release/frederikb96/kube-borg-backup)](https://github.com/frederikb96/kube-borg-backup/releases)
-[![License](https://img.shields.io/github/license/frederikb96/kube-borg-backup)](LICENSE)
-[![Release Pipeline](https://img.shields.io/github/actions/workflow/status/frederikb96/kube-borg-backup/release-pipeline.yaml?label=release-pipeline)](https://github.com/frederikb96/kube-borg-backup/actions/workflows/release-pipeline.yaml)
-[![Helm Chart](https://img.shields.io/badge/helm-chart-blue)](https://frederikb96.github.io/kube-borg-backup)
+<p align="center"><img src="docs/images/header.jpg" alt="Three server racks, each with a stack of snapshot layers above it, linked by a dotted path to an open vault holding archives" width="100%"></p>
 
 <table>
 <tr>
-<td width="140">
-<img src="docs/logo.png" alt="kube-borg-backup" width="120">
+<td width="100">
+<img src="docs/images/logo.png" alt="kube-borg-backup" width="84">
 </td>
 <td>
 <h1>kube-borg-backup</h1>
-Instant CSI snapshots + async BorgBackup for production-grade Kubernetes application backups
+Instant CSI snapshots and asynchronous BorgBackup for the persistent volumes of a Kubernetes application
 </td>
 </tr>
 </table>
 
-## Why kube-borg-backup?
+[![CI](https://github.com/frederikb96/kube-borg-backup/actions/workflows/ci.yaml/badge.svg)](https://github.com/frederikb96/kube-borg-backup/actions/workflows/ci.yaml)
+[![Release](https://img.shields.io/github/v/release/frederikb96/kube-borg-backup)](https://github.com/frederikb96/kube-borg-backup/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Get **instant, crash-consistent snapshots** of your entire Kubernetes application (databases + data), then **asynchronously backup** to offsite BorgBackup storage. Perfect for applications like Immich, Nextcloud, or any stateful workload where you need:
+One Helm install backs up everything a stateful application keeps: every few hours the volumes are snapshotted through the CSI driver, with the database paused for the moment it takes, and a second job copies the latest snapshots into an offsite Borg repository. Restoring is one `kbb` command, either from a local snapshot or from a Borg archive.
 
-- **Instant point-in-time recovery** via CSI snapshots (seconds)
-- **Offsite backup** to BorgBackup repository (disaster recovery)
-- **Database consistency** via pre/post hooks (PostgreSQL, MySQL, etc.)
-- **One Helm install per application** - complete backup solution
+```console
+$ kbb -n immich -a immich -r backup snap list
 
-Developed specifically to solve the problem of backing up complex Kubernetes applications with multiple PVCs and databases while maintaining consistency and enabling fast recovery.
+Snapshots for immich (3 found):
 
-## Prerequisites
-
-### Required
-
-- **Kubernetes 1.25+**
-- **BorgBackup repository** (e.g., BorgBase, self-hosted)
-
-### Snapshot-Based Mode (Recommended)
-
-Enables instant recovery + async backup with zero application downtime:
-
-- **CSI driver with VolumeSnapshot support** (Longhorn, Ceph RBD, ZFS, AWS EBS CSI, etc.)
-- **Storage class with snapshot cloning support** (creates clone PVCs from snapshots)
-- **VolumeSnapshotClass configured** in cluster
-
-```bash
-# Check CSI driver supports snapshots
-kubectl get volumesnapshotclass
-
-# Check if your storage class can create snapshots
-kubectl get storageclass <your-class> -o yaml | grep -i snapshot
-
-# Test snapshot creation (optional)
-kubectl create -f - <<EOF
-apiVersion: snapshot.storage.k8s.io/v1
-kind: VolumeSnapshot
-metadata:
-  name: test-snapshot
-spec:
-  source:
-    persistentVolumeClaimName: <your-pvc>
-  volumeSnapshotClassName: <your-snapshot-class>
-EOF
+NAME                                               PVC                            CREATED                   READY
+postgres-data-snap-20260610120004                  postgres-data                  2026-06-10T12:00:04Z      Yes
+postgres-data-snap-20260610080003                  postgres-data                  2026-06-10T08:00:03Z      Yes
+postgres-data-snap-20260610040005                  postgres-data                  2026-06-10T04:00:05Z      Yes
 ```
 
-### Direct Mode (Without Snapshots)
+## Why
 
-For storage classes without CSI snapshot support (e.g., NFS, HostPath):
+- **The application keeps running.** The snapshot is taken by the storage layer in seconds, and the Borg run reads a clone of it, so the live volume is never read for hours.
+- **Databases stay consistent.** Exec hooks run before and after the snapshots (`pg_backup_start` and `pg_backup_stop` for PostgreSQL), and the post hooks run even when the run fails or the pod is evicted.
+- **Local and offsite copies from one config.** Snapshots are the fast restore point; Borg adds deduplicated, compressed, encrypted history in a repository elsewhere.
+- **A stale volume does not produce fresh-looking backups.** A PVC whose pod has stopped being ready is not snapshotted, and the run fails, so the last good snapshots stay in the retention window.
+- **One release per application.** Several applications share one chart install, one Borg repository definition and one `kbb` CLI.
 
-- Set `snapshotted: false` per PVC in values.yaml (see detailed configuration in helm values)
-- **Requires:** RWX access mode OR unbound PVC during backup window
-- **Note:** Application downtime may be needed to safely unmount PVC before backup and not consistent data during backup if app is running!
+## How it fits together
 
-## Features
-
-- **CSI VolumeSnapshot Automation** - Create and prune snapshots with tiered retention (hourly/daily/weekly/monthly)
-- **BorgBackup Integration** - Backup snapshot clones to offsite BorgBackup repository with deduplication and compression
-- **Database Consistency Hooks** - Pod-exec hooks for PostgreSQL, MySQL, etc. (pg_backup_start/stop)
-- **SIGTERM Safety** - Guaranteed cleanup and post-hook execution even on pod termination
-- **Parallel Snapshots** - Create multiple snapshots simultaneously for fast backup
-- **Privileged Container Support** - Backup any PVC regardless of ownership (PostgreSQL 70:70, MySQL 999:999, etc.)
-- **Ephemeral Clone PVCs** - Temporary PVCs from snapshots for backup, auto-cleaned after
-- **Configurable Timeouts** - Per-backup timeouts for clone provisioning and backup execution
-- **Helm Deployment** - Single chart with separate CronJobs for snapshot and backup operations
-- **Multi-Architecture** - ARM64 and AMD64 support
-
-## Restore Functionality
-
-Restore operations are fully supported via the `kbb` CLI tool:
-
-- **Snapshot restore:** Clone VolumeSnapshot to new PVC or rsync to existing PVC
-- **Borg archive restore:** Mount borg archive via FUSE and restore to PVC
-- **Pre/post hooks:** Scale deployments, execute commands during restore
-- **Configurable:** Custom image tags, storage classes, resource limits
-
-### CLI Installation
-
-```bash
-# -force for upgrade if already installed
-# Install specific version (recommended - pin to release tag)
-pipx install --force git+https://github.com/frederikb96/kube-borg-backup.git@vX.Y.Z#subdirectory=apps
-
-# OR install latest main (development version)
-pipx install --force git+https://github.com/frederikb96/kube-borg-backup.git#subdirectory=apps
-
-# Uninstall
-pipx uninstall kube-borg-backup-cli
+```mermaid
+flowchart LR
+    subgraph snapshot["Snapshot CronJob"]
+        direction LR
+        pre["pre-hooks"] --> snap["VolumeSnapshots in parallel"] --> post["post-hooks"] --> prune["tiered retention"]
+    end
+    subgraph backup["Backup CronJob"]
+        direction LR
+        clone["clone PVC from the latest snapshot"] --> pod["privileged Borg pod"]
+    end
+    snap -.-> clone
+    pod --> repo[("Borg repository")]
 ```
 
-Replace `vX.Y.Z` with desired version from [releases](https://github.com/frederikb96/kube-borg-backup/releases).
+The two CronJobs run on their own schedules and meet only at the VolumeSnapshots. Details, including what a Borg pod does and what happens on `SIGTERM`: [docs/how-it-works.md](docs/how-it-works.md).
 
-See `kbb --help` for full command reference.
+## What you need
 
-## Quick Start
+- Kubernetes 1.25 or newer and Helm.
+- A Borg repository reachable over SSH (BorgBase or self-hosted), with a passphrase and an SSH key for it.
+- For snapshot mode: a CSI driver with `VolumeSnapshot` support, a `VolumeSnapshotClass`, and a storage class that can create a PVC from a snapshot. Without snapshots, direct mode backs up the live PVC; its limits are in [docs/modes.md](docs/modes.md).
 
-### Add Helm Repository
+## Install
 
 ```bash
 helm repo add kube-borg-backup https://frederikb96.github.io/kube-borg-backup
 helm repo update
-```
 
-### View Configuration
+# every option, with inline documentation
+helm show values kube-borg-backup/kube-borg-backup > values.yaml
 
-```bash
-# View all available options with inline documentation
-helm show values kube-borg-backup/kube-borg-backup
-
-# View complete Immich example with PostgreSQL hooks
-curl -O https://raw.githubusercontent.com/frederikb96/kube-borg-backup/main/example/values.yaml
-```
-
-### Install
-
-```bash
-# Create your values.yaml based on example
-# Then install:
 helm install my-backup kube-borg-backup/kube-borg-backup \
-  --namespace my-app \
-  --values my-values.yaml
-
-# Verify deployment
-kubectl get cronjobs -n my-app
-kubectl get serviceaccount,role,rolebinding -n my-app | grep borg
+  --namespace my-app --values my-values.yaml
 ```
 
-### Manual Test
+Then trigger the first run by hand and watch it:
 
 ```bash
-# Manually trigger snapshot job
-kubectl create job --from=cronjob/my-backup-kube-borg-backup-snapshot \
-  snapshot-manual-test -n my-app
-
-# Watch logs
-kubectl logs -n my-app -l job-name=snapshot-manual-test -f
-
-# Check created snapshots
+kubectl create job --from=cronjob/my-backup-<app>-snapshot snapshot-first -n my-app
+kubectl logs -n my-app -l job-name=snapshot-first -f
 kubectl get volumesnapshots -n my-app
 ```
 
+The `kbb` CLI restores from a snapshot or an archive and is installed with pipx; see [docs/restore.md](docs/restore.md).
+
 ## Configuration
 
-All configuration is done via Helm values. See the following files for detailed documentation:
+All settings are Helm values. The chart's [values.yaml](charts/kube-borg-backup/values.yaml) documents every option inline and is the single reference; [example/values.yaml](example/values.yaml) is a complete application with PostgreSQL hooks. Hook syntax is in [docs/hooks.md](docs/hooks.md).
 
-- **[charts/kube-borg-backup/values.yaml](charts/kube-borg-backup/values.yaml)** - All available configuration options with comprehensive inline comments
-- **[example/values.yaml](example/values.yaml)** - Complete working example for Immich backup with PostgreSQL consistency hooks
+## Docs
 
-## How It Works
-
-1. **Snapshot Controller** runs as CronJob and creates `VolumeSnapshot` resources for configured PVCs, refusing (and failing the run) for a PVC whose mounting pod has been unready past `unreadyConsumerGraceSeconds`
-2. **Pre-hooks** execute sequentially before snapshots (e.g., `pg_backup_start()` to pause PostgreSQL writes)
-3. **Snapshots** are created in parallel via CSI driver for instant point-in-time capture
-4. **Post-hooks** execute sequentially after snapshots (e.g., `pg_backup_stop()` to resume writes)
-5. **Tiered retention** prunes old snapshots keeping 1 per time bucket (hourly/daily/weekly/monthly)
-6. **Backup Controller** runs as separate CronJob and finds latest snapshots or uses direct PVCs if configured without snapshots
-7. **Clone PVCs** are created from snapshots with temporary storage class if snapshot-based mode is used
-8. **Borg pods** are spawned dynamically (one per PVC) and run privileged to access any filesystem
-9. **Backups** execute sequentially (Borg limitation) with configurable timeouts and lock handling
-10. **Cleanup** happens automatically: borg pods deleted, clone PVCs removed, secrets cleaned up
-
-**SIGTERM safety:** Both controllers have signal handlers ensuring post-hooks always run and resources are cleaned up even on pod eviction.
-
-## Architecture
-
-The tool consists of three components:
-
-1. **Snapshot CronJob** - Python controller that creates/prunes VolumeSnapshots with pod-exec hooks
-2. **Backup CronJob** - Python controller that creates clone PVCs and orchestrates Borg pods
-3. **Borg Pods** - Ephemeral privileged pods spawned per backup to run actual `borg create` and `borg prune`
-
-Both CronJobs use the unified `kube-borg-backup/controller` image (Python 3.15) with different entrypoints.
-Borg pods use the `kube-borg-backup/backup-runner` image (Alpine + borgbackup + Python 3.15).
-
-**Technologies:**
-- Python 3.15 with kubernetes client library
-- BorgBackup for deduplication and compression
-- Kubernetes CSI VolumeSnapshot API
-- Helm 3 for packaging
-
-## Development
-
-**Checks** (the pull request gate runs the same, plus chart lint; `CI ok` is the required check):
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r apps/requirements-dev.txt -r apps/controller/requirements.txt
-
-ruff check apps/
-mypy --config-file mypy.ini
-pytest
-```
-
-A change under `charts/` needs a bumped `version` in `charts/kube-borg-backup/Chart.yaml` (chart-testing enforces it).
-
-## Contributing
-
-Contributions welcome! Please:
-
-1. Create issues for bugs or feature requests
-2. Fork and submit pull requests
-3. Follow existing code style (Ruff + Mypy enforced via CI)
-4. Update CHANGELOG.md with your changes
-5. Test in dedicated namespace in kubernetes before submitting
+- [How it works](docs/how-it-works.md): the snapshot and backup runs step by step, the pods and images, signal handling.
+- [Snapshot and direct mode](docs/modes.md): what each mode needs from the storage layer and what it costs.
+- [Hooks](docs/hooks.md): consistency hooks around snapshots, and the hooks around a restore.
+- [Restore](docs/restore.md): installing `kbb`, listing snapshots and archives, restoring a PVC.
+- [Development](docs/development.md): checks, the files that carry the version, releasing.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## Links
-
-- **GitHub:** https://github.com/frederikb96/kube-borg-backup
-- **Helm Charts:** https://frederikb96.github.io/kube-borg-backup
-- **Issues:** https://github.com/frederikb96/kube-borg-backup/issues
-- **Docker Images:** https://github.com/frederikb96?tab=packages
-
+[MIT](LICENSE)
