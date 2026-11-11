@@ -27,6 +27,10 @@ jobs:
           filters: |
             python:
               - 'apps/**'
+              - 'scripts/**'
+              - 'docs/**'
+              - 'README.md'
+              - 'CHANGELOG.md'
               - 'mypy.ini'
               - 'pytest.ini'
               - '.ruff.toml'
@@ -54,7 +58,7 @@ jobs:
         run: pip install -r apps/requirements-dev.txt
 
       - name: Run ruff
-        run: ruff check apps/
+        run: ruff check apps/ scripts/
 
   mypy:
     name: Mypy Type Check
@@ -130,22 +134,24 @@ jobs:
         if: steps.list.outputs.changed == 'true'
         run: ct lint --config .ct.yaml --target-branch ${{ github.event.repository.default_branch }}
 
+  release-versions:
+    name: Release versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the version locations and the CHANGELOG agree
+        run: python3 scripts/check_release_versions.py
+
   ci-ok:
     name: CI ok
-    needs: [detect, ruff, mypy, pytest, helm-lint]
+    needs: [detect, ruff, mypy, pytest, helm-lint, release-versions]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any required job failed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          for result in \
-            "${{ needs.detect.result }}" \
-            "${{ needs.ruff.result }}" \
-            "${{ needs.mypy.result }}" \
-            "${{ needs.pytest.result }}" \
-            "${{ needs.helm-lint.result }}"; do
-            if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
-              echo "A required job did not succeed: $result"
-              exit 1
-            fi
-          done
+          echo "results: $RESULTS"
+          case " $RESULTS " in *" failure "*|*" cancelled "*) exit 1 ;; esac

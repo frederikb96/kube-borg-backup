@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `scripts/check_release_versions.py` checks that the chart, both `VERSION` files and `setup.py` carry the same version and that the CHANGELOG has a section for it. It runs in every pull request and, with the tag, at the start of the release pipeline.
+
+### Changed
+- The GitHub Release of a version carries that version's CHANGELOG section as its notes and is marked as a pre-release for `-rc`, `-beta` and `-alpha` tags.
+- The README is a front page; hooks, restore procedures, snapshot and direct mode and development notes moved to `docs/`.
+
 ## [6.5.6] - 2026-11-07
 
 ### Changed
@@ -396,7 +403,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Storage Class Alignment** (Helm Chart v6.0.0, Testing v6.0.0)
   - Aligned clone PVC storage class to `longhorn-normal` (WaitForFirstConsumer)
   - Updated all test configs and documentation
-  - Follows CLAUDE.md best practices
 
 - **Image Configuration** (Helm Chart v6.0.0, CLI v1.0.0)
   - CLI reads image tags from config Secret (no hardcoded `:dev` tags)
@@ -425,7 +431,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 
 - **Longhorn Namespace Hardcoding** (Documentation v6.0.0)
-  - Added detailed explanation in CLAUDE.md (Phase A)
   - Explains why `longhorn-system` namespace is hardcoded
   - Documents reliability vs flexibility tradeoff
 
@@ -826,7 +831,7 @@ Secret: kbb-dev-test-borg-config
   - Clear explanations of sequential vs parallel execution
 
 - **Test Configuration**
-  - Updated `.claude/tests/config/values.yaml` to new structure
+  - Updated the test values file to the new structure
   - Single test app targeting `kube-borg-backup-dev` namespace
   - Uses `borgbase-test` repository reference
 
@@ -1146,7 +1151,6 @@ borgbackup:
 - **Documentation**
   - Complete README.md rewrite with badges, prerequisites, quick start, concepts
   - New example/values.yaml with current structure (Immich use case preserved)
-  - Updated CLAUDE.md with comprehensive testing workflows
   - Inline values.yaml documentation improvements
 
 ### Fixed
@@ -1193,7 +1197,7 @@ borgbackup:
 - **Essentials Image**: `ghcr.io/frederikb96/kube-borg-backup/backup-runner:2.0.0` (Python 3.13-alpine + borgbackup)
 - **Helm Chart**: `kube-borg-backup` v2.0.0
 - **Kubernetes**: Requires 1.25+ with CSI VolumeSnapshot support
-- **Testing**: Comprehensive test suite in `.claude/tests/` (Python direct, Docker, Helm)
+- **Testing**: Comprehensive test suite (Python direct, Docker, Helm)
 
 ## [1.0.0] - 2025-10-22
 
